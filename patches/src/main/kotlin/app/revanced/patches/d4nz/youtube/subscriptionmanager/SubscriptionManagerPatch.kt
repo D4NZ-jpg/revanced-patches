@@ -1,0 +1,250 @@
+package app.revanced.patches.d4nz.youtube.subscriptionmanager
+
+import app.revanced.patcher.extensions.addInstruction
+import app.revanced.patcher.extensions.instructions
+import app.revanced.patcher.firstClassDef
+import app.revanced.patcher.patch.PatchException
+import app.revanced.patcher.patch.bytecodePatch
+import app.revanced.patches.all.misc.resources.addResources
+import app.revanced.patches.all.misc.resources.addResourcesPatch
+import app.revanced.patches.shared.misc.litho.filter.addLithoFilter
+import app.revanced.patches.shared.misc.settings.preference.InputType
+import app.revanced.patches.shared.misc.settings.preference.NonInteractivePreference
+import app.revanced.patches.shared.misc.settings.preference.PreferenceScreenPreference
+import app.revanced.patches.shared.misc.settings.preference.PreferenceScreenPreference.Sorting
+import app.revanced.patches.shared.misc.settings.preference.SwitchPreference
+import app.revanced.patches.shared.misc.settings.preference.TextPreference
+import app.revanced.patches.youtube.misc.litho.filter.lithoFilterPatch
+import app.revanced.patches.youtube.misc.navigation.navigationBarHookPatch
+import app.revanced.patches.youtube.misc.settings.PreferenceScreen
+import app.revanced.patches.youtube.misc.settings.settingsPatch
+import app.revanced.patches.youtube.video.information.videoInformationPatch
+import app.revanced.patches.youtube.video.information.videoTimeHook
+import app.revanced.util.p0Register
+import com.android.tools.smali.dexlib2.AccessFlags
+import com.android.tools.smali.dexlib2.Opcode
+import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.NarrowLiteralInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.OffsetInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.TwoRegisterInstruction
+import com.android.tools.smali.dexlib2.iface.reference.FieldReference
+import com.android.tools.smali.dexlib2.iface.reference.MethodReference
+
+private fun addSubscriptionManagerResources() {
+    mapOf(
+        "revanced_d4nz_subscription_manager_screen_title" to "Subscription manager",
+        "revanced_d4nz_subscription_manager_screen_summary" to
+            "Experimental Subscriptions feed settings",
+        "revanced_d4nz_subscription_manager_about_title" to "About subscription manager",
+        "revanced_d4nz_subscription_manager_about_summary" to
+            """Experimental filter for the Subscriptions feed.
+
+State is separated per account, with nonpersistent incognito isolation, on verified YouTube 20.40.45. Swipe, channel menu actions, and feed red-bar progress detection remain unavailable pending target-app evidence. Cards remain visible when identity or progress cannot be detected safely.""",
+        "revanced_d4nz_subscription_manager_title" to "Enable subscription manager",
+        "revanced_d4nz_subscription_manager_summary_on" to
+            "Enabled for the Subscriptions feed",
+        "revanced_d4nz_subscription_manager_summary_off" to "Disabled",
+        "revanced_d4nz_subscription_manager_hide_watched_title" to "Hide watched videos",
+        "revanced_d4nz_subscription_manager_hide_watched_summary_on" to
+            "Hide watched videos detected in the Subscriptions feed",
+        "revanced_d4nz_subscription_manager_hide_watched_summary_off" to
+            "Watched videos are shown",
+        "revanced_d4nz_subscription_manager_watched_threshold_title" to "Watched threshold",
+        "revanced_d4nz_subscription_manager_watched_threshold_summary" to
+            "Minimum watched progress percentage. Default is 80.",
+        "revanced_d4nz_subscription_manager_debug_title" to "Debug logging",
+        "revanced_d4nz_subscription_manager_debug_summary_on" to
+            "Debug logging is enabled",
+        "revanced_d4nz_subscription_manager_debug_summary_off" to
+            "Debug logging is disabled",
+    ).forEach { (name, value) -> addResources(name, value, formatted = true) }
+}
+
+val subscriptionManagerPatch = bytecodePatch(
+    name = "Subscription manager",
+    description = "Adds experimental settings to manage watched videos in the Subscriptions feed.",
+    use = false,
+) {
+    dependsOn(
+        addResourcesPatch,
+        settingsPatch,
+        lithoFilterPatch,
+        navigationBarHookPatch,
+        videoInformationPatch,
+    )
+
+    compatibleWith(
+        "com.google.android.youtube"("20.40.45"),
+    )
+
+    extendWith("extensions/subscriptionmanager.rve")
+
+    apply {
+        val transitionMethod = accountIdentityTransitionMethod
+        val transitionCommitMatches = transitionMethod.instructions.indices.filter { index ->
+            if (index + 2 >= transitionMethod.instructions.size) return@filter false
+            val call = transitionMethod.instructions[index]
+            val result = transitionMethod.instructions[index + 1]
+            val branch = transitionMethod.instructions[index + 2]
+            val method = (call as? ReferenceInstruction)?.reference as? MethodReference
+                ?: return@filter false
+            val callRegisters = call as? FiveRegisterInstruction ?: return@filter false
+            val resultRegister = result as? OneRegisterInstruction ?: return@filter false
+            val branchRegister = branch as? OneRegisterInstruction ?: return@filter false
+            val branchOffset = branch as? OffsetInstruction ?: return@filter false
+            val identityRegister = transitionMethod.p0Register + 1
+            val identityAddedToUpdate = (maxOf(0, index - 12) until index).any { priorIndex ->
+                val prior = transitionMethod.instructions[priorIndex]
+                val priorMethod = (prior as? ReferenceInstruction)?.reference as? MethodReference
+                    ?: return@any false
+                val priorRegisters = prior as? FiveRegisterInstruction ?: return@any false
+                prior.opcode == Opcode.INVOKE_INTERFACE &&
+                    priorMethod.toString() == "Ljava/util/Set;->add(Ljava/lang/Object;)Z" &&
+                    priorRegisters.registerD == identityRegister
+            }
+
+            call.opcode == Opcode.INVOKE_VIRTUAL &&
+                callRegisters.registerC == transitionMethod.p0Register &&
+                method.definingClass == transitionMethod.definingClass &&
+                method.returnType == "Z" &&
+                method.parameterTypes.size == 2 &&
+                method.parameterTypes.all { it.startsWith("L") } &&
+                result.opcode == Opcode.MOVE_RESULT &&
+                branch.opcode == Opcode.IF_EQZ &&
+                branchOffset.codeOffset < 0 &&
+                resultRegister.registerA == branchRegister.registerA &&
+                identityAddedToUpdate
+        }
+        if (transitionCommitMatches.size != 1) {
+            throw PatchException(
+                "Could not uniquely identify the committed AccountIdentity transition " +
+                    "(found ${transitionCommitMatches.size} structural matches)",
+            )
+        }
+        val transitionCommitIndex = transitionCommitMatches.single()
+        val identityRegister = transitionMethod.p0Register + 1
+        val transitionDispatchMatches =
+            (transitionCommitIndex + 3 until transitionMethod.instructions.size).filter { index ->
+                val branch = transitionMethod.instructions[index]
+                val branchRegister = branch as? OneRegisterInstruction ?: return@filter false
+                val dispatchFollows =
+                    (index + 1 until minOf(index + 12, transitionMethod.instructions.size)).any {
+                        val instruction = transitionMethod.instructions[it]
+                        val reference =
+                            (instruction as? ReferenceInstruction)?.reference as? MethodReference
+                                ?: return@any false
+                        instruction.opcode == Opcode.INVOKE_VIRTUAL &&
+                            reference.returnType ==
+                            "Lcom/google/common/util/concurrent/ListenableFuture;" &&
+                            reference.parameterTypes.size == 1
+                    }
+                branch.opcode == Opcode.IF_NEZ &&
+                    branchRegister.registerA == identityRegister && dispatchFollows
+            }
+        if (transitionDispatchMatches.size != 1) {
+            throw PatchException(
+                "Could not uniquely identify the committed AccountIdentity dispatch " +
+                    "(found ${transitionDispatchMatches.size} structural matches)",
+            )
+        }
+        transitionMethod.addInstruction(
+            transitionDispatchMatches.single(),
+            "invoke-static {p1}, " +
+                "Lapp/revanced/extension/d4nz/youtube/subscriptionmanager/SubscriptionManagerAccountHook;" +
+                "->setAccount(Lcom/google/android/libraries/youtube/account/identity/AccountIdentity;)V",
+        )
+
+        val startupCandidates = firstClassDef(transitionMethod.definingClass).methods.filter { method ->
+            val identityFactoryCount = method.instructions.count { instruction ->
+                val reference = (instruction as? ReferenceInstruction)?.reference as? MethodReference
+                instruction.opcode == Opcode.INVOKE_STATIC &&
+                    reference?.definingClass == ACCOUNT_IDENTITY_DESCRIPTOR &&
+                    reference.returnType == ACCOUNT_IDENTITY_DESCRIPTOR
+            }
+            val atomicStateWriteCount = method.instructions.count { instruction ->
+                val reference = (instruction as? ReferenceInstruction)?.reference as? MethodReference
+                instruction.opcode == Opcode.INVOKE_VIRTUAL &&
+                    reference?.toString() ==
+                    "Ljava/util/concurrent/atomic/AtomicReference;->set(Ljava/lang/Object;)V"
+            }
+            AccessFlags.PUBLIC.isSet(method.accessFlags) &&
+                AccessFlags.FINAL.isSet(method.accessFlags) &&
+                method.parameterTypes.isEmpty() && method.returnType == "V" &&
+                identityFactoryCount >= 3 && atomicStateWriteCount == 1
+        }
+        val startupMatches = startupCandidates.mapNotNull { method ->
+            val matches = method.instructions.indices.filter { index ->
+                if (index + 2 >= method.instructions.size) return@filter false
+                val identityWrite = method.instructions[index]
+                val clearIdentity = method.instructions[index + 1]
+                val builderWrite = method.instructions[index + 2]
+                if (identityWrite.opcode != Opcode.IPUT_OBJECT ||
+                    clearIdentity.opcode != Opcode.CONST_4 ||
+                    builderWrite.opcode != Opcode.IPUT_OBJECT
+                ) return@filter false
+
+                val identityRegisters = identityWrite as? TwoRegisterInstruction ?: return@filter false
+                val clearRegister = clearIdentity as? OneRegisterInstruction ?: return@filter false
+                val clearLiteral = clearIdentity as? NarrowLiteralInstruction ?: return@filter false
+                val builderRegisters = builderWrite as? TwoRegisterInstruction ?: return@filter false
+                val identityField = (identityWrite as? ReferenceInstruction)?.reference as? FieldReference
+                    ?: return@filter false
+                val builderField = (builderWrite as? ReferenceInstruction)?.reference as? FieldReference
+                    ?: return@filter false
+
+                clearLiteral.narrowLiteral == 0 &&
+                    clearRegister.registerA == identityRegisters.registerA &&
+                    builderRegisters.registerA == identityRegisters.registerA &&
+                    builderRegisters.registerB == identityRegisters.registerB &&
+                    identityField.definingClass == builderField.definingClass &&
+                    identityField.type == "Ljava/lang/Object;" &&
+                    builderField.type == "Ljava/lang/Object;" &&
+                    identityField.name != builderField.name
+            }
+            if (matches.size == 1) Triple(method, matches.single() + 1,
+                (method.instructions[matches.single()] as TwoRegisterInstruction).registerA) else null
+        }
+        if (startupMatches.size != 1) {
+            throw PatchException(
+                "Could not uniquely prove the active AccountIdentity register at startup " +
+                    "(found ${startupMatches.size} structural matches)",
+            )
+        }
+        val (startupMethod, startupInsertIndex, startupIdentityRegister) = startupMatches.single()
+        startupMethod.addInstruction(
+            startupInsertIndex,
+            "invoke-static {v$startupIdentityRegister}, " +
+                "Lapp/revanced/extension/d4nz/youtube/subscriptionmanager/SubscriptionManagerAccountHook;" +
+                "->setAccountFromStartup(Ljava/lang/Object;)V",
+        )
+
+        addSubscriptionManagerResources()
+
+        addLithoFilter(
+            "Lapp/revanced/extension/d4nz/youtube/patches/litho/SubscriptionManagerFilter;",
+        )
+        videoTimeHook(
+            "Lapp/revanced/extension/d4nz/youtube/subscriptionmanager/SubscriptionManagerPlayback;",
+            "setVideoTime",
+        )
+
+        PreferenceScreen.FEED.addPreferences(
+            PreferenceScreenPreference(
+                key = "revanced_d4nz_subscription_manager_screen",
+                sorting = Sorting.UNSORTED,
+                preferences = setOf(
+                    NonInteractivePreference("revanced_d4nz_subscription_manager_about"),
+                    SwitchPreference("revanced_d4nz_subscription_manager"),
+                    SwitchPreference("revanced_d4nz_subscription_manager_hide_watched"),
+                    TextPreference(
+                        "revanced_d4nz_subscription_manager_watched_threshold",
+                        inputType = InputType.NUMBER,
+                    ),
+                    SwitchPreference("revanced_d4nz_subscription_manager_debug"),
+                ),
+            ),
+        )
+    }
+}

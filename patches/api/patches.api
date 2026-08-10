@@ -1,0 +1,4 @@
+public final class app/revanced/patches/d4nz/youtube/subscriptionmanager/SubscriptionManagerPatchKt {
+	public static final fun getSubscriptionManagerPatch ()Lapp/revanced/patcher/patch/Patch;
+}
+

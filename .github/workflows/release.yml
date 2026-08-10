@@ -1,0 +1,142 @@
+name: Release custom patches
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, including the leading v
+        required: true
+        type: string
+      description:
+        description: Release notes shown by ReVanced Manager
+        required: true
+        type: string
+
+jobs:
+  release:
+    permissions:
+      contents: write
+      packages: read
+      id-token: write
+      attestations: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Prepare release metadata
+        env:
+          DESCRIPTION: ${{ inputs.description }}
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          ! git rev-parse "$VERSION" >/dev/null 2>&1
+          plain_version="${VERSION#v}"
+          sed -i "s/^version = .*/version = $plain_version/" gradle.properties
+          python3 - <<'PY'
+          import datetime
+          import json
+          import os
+
+          version = os.environ["VERSION"]
+          plain = version.removeprefix("v")
+          data = {
+              "version": version,
+              "created_at": datetime.datetime.now(datetime.timezone.utc)
+                  .replace(tzinfo=None)
+                  .isoformat(timespec="seconds"),
+              "description": os.environ["DESCRIPTION"],
+              "download_url": (
+                  f"https://github.com/{os.environ['REPOSITORY']}/releases/download/"
+                  f"{version}/patches-{plain}.rvp"
+              ),
+              "signature_download_url": None,
+          }
+          with open("manager.json", "w", encoding="utf-8") as file:
+              json.dump(data, file, indent=2)
+              file.write("\n")
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add gradle.properties manager.json
+          git commit -m "chore: Release $VERSION"
+          git tag "$VERSION"
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+
+      - name: Test and build
+        env:
+          ORG_GRADLE_PROJECT_githubPackagesUsername: ${{ github.actor }}
+          ORG_GRADLE_PROJECT_githubPackagesPassword: ${{ secrets.GITHUB_TOKEN }}
+        run: ./gradlew clean :extensions:subscriptionmanager:testDebugUnitTest :patches:buildAndroid --no-daemon
+
+      - name: Verify custom-only bundle
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          bundle=$(find patches/build/libs -maxdepth 1 -name '*.rvp' -print -quit)
+          test -n "$bundle"
+
+          unexpected_patch_classes=$(unzip -Z1 "$bundle" \
+            | grep '^app/revanced/patches/.*\.class$' \
+            | grep -v '^app/revanced/patches/d4nz/' || true)
+          test -z "$unexpected_patch_classes"
+
+          custom_patches=$(unzip -Z1 "$bundle" \
+            | grep '^app/revanced/patches/d4nz/.*PatchKt.class$' \
+            | wc -l)
+          test "$custom_patches" -eq 1
+
+          bundled_resources=$(unzip -Z1 "$bundle" | grep '^addresources/' || true)
+          test -z "$bundled_resources"
+
+          unzip -p "$bundle" extensions/subscriptionmanager.rve > subscriptionmanager.rve
+          dexdump=$(find "$ANDROID_HOME/build-tools" -type f -name dexdump | sort -V | tail -1)
+          test -x "$dexdump"
+          "$dexdump" subscriptionmanager.rve > subscriptionmanager-dex.txt
+          unexpected_runtime_classes=$(awk -F"'" '/Class descriptor/{print $2}' \
+            subscriptionmanager-dex.txt \
+            | grep -v '^Lapp/revanced/extension/d4nz/' || true)
+          test -z "$unexpected_runtime_classes"
+
+          cp "$bundle" "patches-${VERSION#v}.rvp"
+          echo "PATCH_ASSET=patches-${VERSION#v}.rvp" >> "$GITHUB_ENV"
+
+      - name: Push release tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: git push origin "$VERSION"
+
+      - name: Publish release
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DESCRIPTION: ${{ inputs.description }}
+          VERSION: ${{ inputs.version }}
+        run: gh release create "$VERSION" "$PATCH_ASSET" --title "$VERSION" --notes "$DESCRIPTION"
+
+      - name: Attest patch bundle
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: D4NZ ReVanced patches ${{ inputs.version }}
+          subject-path: ${{ env.PATCH_ASSET }}
+
+      - name: Publish stable Manager descriptor
+        id: stable
+        run: git push origin HEAD:main
+
+      - name: Clean up incomplete release
+        if: failure() && steps.stable.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release delete "$VERSION" --yes --cleanup-tag || true
+          git push --delete origin "$VERSION" || true
