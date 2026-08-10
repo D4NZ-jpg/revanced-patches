@@ -39,9 +39,9 @@ private fun addSubscriptionManagerResources() {
             "Experimental Subscriptions feed settings",
         "revanced_d4nz_subscription_manager_about_title" to "About subscription manager",
         "revanced_d4nz_subscription_manager_about_summary" to
-            """Experimental filter for the Subscriptions feed.
+            """Automatically hides regular videos from your Subscriptions feed after you watch the selected percentage. Refresh the feed after watching a video. Shorts, live streams, and upcoming videos are not affected.
 
-State is separated per account, with nonpersistent incognito isolation, on verified YouTube 20.40.45. Swipe, channel menu actions, and feed red-bar progress detection remain unavailable pending target-app evidence. Cards remain visible when identity or progress cannot be detected safely.""",
+Swipe-to-hide and channel hiding are not available yet.""",
         "revanced_d4nz_subscription_manager_title" to "Enable subscription manager",
         "revanced_d4nz_subscription_manager_summary_on" to
             "Enabled for the Subscriptions feed",
