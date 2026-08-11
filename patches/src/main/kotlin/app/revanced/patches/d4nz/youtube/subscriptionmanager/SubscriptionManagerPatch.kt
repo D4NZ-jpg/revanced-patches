@@ -94,7 +94,7 @@ Experimental left swipe can hide supported Subscription entries locally. Channel
         "revanced_d4nz_subscription_manager_swipe_to_hide_title" to
             "Experimental: Swipe to hide",
         "revanced_d4nz_subscription_manager_swipe_to_hide_summary_on" to
-            "Left swipe hides supported Subscription entries locally",
+            "Deliberate left swipe hides supported Subscription entries locally",
         "revanced_d4nz_subscription_manager_swipe_to_hide_summary_off" to
             "Left swipe hiding is off",
         "revanced_d4nz_subscription_manager_hide_watched_title" to "Hide watched videos",
@@ -323,6 +323,21 @@ val subscriptionManagerPatch = bytecodePatch(
             throw PatchException(
                 "Could not verify the injected subscription card bind hook " +
                     "(found $injectedBindHooks calls)",
+            )
+        }
+
+        val adapterNotifyItemChangedMethods = firstClassDef("Ldefpackage/mx;").methods.filter { method ->
+            method.name == "hf" &&
+                method.parameterTypes.map { it.toString() } == listOf("I") &&
+                method.returnType == "V" &&
+                !AccessFlags.STATIC.isSet(method.accessFlags) &&
+                AccessFlags.PUBLIC.isSet(method.accessFlags) &&
+                AccessFlags.FINAL.isSet(method.accessFlags)
+        }
+        if (adapterNotifyItemChangedMethods.size != 1) {
+            throw PatchException(
+                "Could not verify the RecyclerView item-rebind ABI " +
+                    "(found ${adapterNotifyItemChangedMethods.size} exact matches)",
             )
         }
 

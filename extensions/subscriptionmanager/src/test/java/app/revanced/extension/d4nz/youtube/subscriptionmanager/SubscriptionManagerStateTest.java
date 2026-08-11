@@ -166,7 +166,7 @@ public final class SubscriptionManagerStateTest {
     }
 
     @Test
-    public void failedScheduledRemovalRollsBackTheCapturedAccountAfterTransition() {
+    public void confirmedSwipeHidePersistsAcrossRefreshAndAccountTransitions() {
         InMemoryStore store = new InMemoryStore();
         SubscriptionManagerAccount first = SubscriptionManagerAccount.fromIdentifier("first");
         SubscriptionManagerAccount second = SubscriptionManagerAccount.fromIdentifier("second");
@@ -178,89 +178,14 @@ public final class SubscriptionManagerStateTest {
         SubscriptionManagerState.SwipePersistence existing =
                 state.persistManualHideForSwipe("Abc_def-123", first.getNamespace());
         assertEquals(SubscriptionManagerState.SWIPE_PERSIST_EXISTING, existing.status);
-        assertEquals(added.mutationToken, existing.mutationToken);
-        state.setAccount(second);
-        assertTrue(state.rollbackManualHideForSwipe(
-                "Abc_def-123", first.getNamespace(), added.mutationToken));
-        assertFalse(state.shouldHideVideo("Abc_def-123"));
-        state.setAccount(first);
-        assertFalse(state.shouldHideVideo("Abc_def-123"));
-    }
-
-    @Test
-    public void staleSwipeCannotRollbackALaterIndependentHideForSameIdentity() {
-        InMemoryStore store = new InMemoryStore();
-        SubscriptionManagerAccount account = SubscriptionManagerAccount.fromIdentifier("account");
-        SubscriptionManagerState state = new SubscriptionManagerState(store, account);
-
-        SubscriptionManagerState.SwipePersistence first =
-                state.persistManualHideForSwipe("Abc_def-123", account.getNamespace());
-        assertEquals(SubscriptionManagerState.SWIPE_PERSIST_ADDED, first.status);
-        assertFalse(state.manuallyHideVideo("Abc_def-123"));
-        assertFalse(state.rollbackManualHideForSwipe(
-                "Abc_def-123", account.getNamespace(), first.mutationToken));
         assertTrue(state.shouldHideVideo("Abc_def-123"));
 
-        assertTrue(state.restoreManuallyHiddenVideo("Abc_def-123"));
-        SubscriptionManagerState.SwipePersistence second =
-                state.persistManualHideForSwipe("Abc_def-123", account.getNamespace());
-        assertEquals(SubscriptionManagerState.SWIPE_PERSIST_ADDED, second.status);
-        assertFalse(first.mutationToken == second.mutationToken);
-
-        assertFalse(state.rollbackManualHideForSwipe(
-                "Abc_def-123", account.getNamespace(), first.mutationToken));
-        assertTrue(state.shouldHideVideo("Abc_def-123"));
-        assertTrue(state.rollbackManualHideForSwipe(
-                "Abc_def-123", account.getNamespace(), second.mutationToken));
-        assertFalse(state.shouldHideVideo("Abc_def-123"));
-    }
-
-    @Test
-    public void committedOrProcessDeathSwipeOwnershipCannotRollbackPersistedHide() {
-        InMemoryStore store = new InMemoryStore();
-        SubscriptionManagerAccount account = SubscriptionManagerAccount.fromIdentifier("account");
-        SubscriptionManagerState state = new SubscriptionManagerState(store, account);
-
-        SubscriptionManagerState.SwipePersistence committed =
-                state.persistManualHideForSwipe("Abc_def-123", account.getNamespace());
-        assertTrue(state.commitManualHideForSwipe(
-                "Abc_def-123", account.getNamespace(), committed.mutationToken));
-        assertFalse(state.rollbackManualHideForSwipe(
-                "Abc_def-123", account.getNamespace(), committed.mutationToken));
-        assertTrue(state.shouldHideVideo("Abc_def-123"));
-        SubscriptionManagerState.SwipePersistence pendingAtProcessDeath =
-                state.persistManualHideForSwipe("Xyz_def-987", account.getNamespace());
-
-        SubscriptionManagerState reloaded = new SubscriptionManagerState(store, account);
-        assertFalse(reloaded.rollbackManualHideForSwipe(
-                "Abc_def-123", account.getNamespace(), committed.mutationToken));
-        assertFalse(reloaded.rollbackManualHideForSwipe(
-                "Xyz_def-987", account.getNamespace(), pendingAtProcessDeath.mutationToken));
-        assertTrue(reloaded.shouldHideVideo("Abc_def-123"));
-        assertTrue(reloaded.shouldHideVideo("Xyz_def-987"));
-    }
-
-    @Test
-    public void pendingSwipeMutationOwnershipIsBounded() {
-        InMemoryStore store = new InMemoryStore();
-        SubscriptionManagerAccount account = SubscriptionManagerAccount.fromIdentifier("account");
-        SubscriptionManagerState state = new SubscriptionManagerState(store, account);
-
-        SubscriptionManagerState.SwipePersistence oldest = null;
-        for (int index = 0;
-                index < SubscriptionManagerState.MAX_PENDING_SWIPE_MUTATIONS + 1;
-                index++) {
-            SubscriptionManagerState.SwipePersistence persistence =
-                    state.persistManualHideForSwipe(
-                            "video-" + index, account.getNamespace());
-            if (index == 0) oldest = persistence;
-        }
-
-        assertEquals(SubscriptionManagerState.MAX_PENDING_SWIPE_MUTATIONS,
-                state.pendingSwipeMutationCountForTests());
-        assertFalse(state.rollbackManualHideForSwipe(
-                "video-0", account.getNamespace(), oldest.mutationToken));
-        assertTrue(state.shouldHideVideo("video-0"));
+        SubscriptionManagerState refreshed = new SubscriptionManagerState(store, first);
+        assertTrue(refreshed.shouldHideVideo("Abc_def-123"));
+        refreshed.setAccount(second);
+        assertFalse(refreshed.shouldHideVideo("Abc_def-123"));
+        refreshed.setAccount(first);
+        assertTrue(refreshed.shouldHideVideo("Abc_def-123"));
     }
 
     @Test

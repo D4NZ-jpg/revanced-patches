@@ -106,34 +106,6 @@ public final class SubscriptionManager {
         }
     }
 
-    /** Clears transient mutation ownership after the source reaches the exact postcondition. */
-    static boolean commitManualHideForSwipe(
-            String videoId, String expectedAccountNamespace, long mutationToken) {
-        initialize();
-        SubscriptionManagerState current = state;
-        if (current == null) return false;
-        try {
-            return current.commitManualHideForSwipe(
-                    videoId, expectedAccountNamespace, mutationToken);
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
-    /** Removes only a newly-created swipe decision after a failed source mutation. */
-    static boolean rollbackManualHideForSwipe(
-            String videoId, String expectedAccountNamespace, long mutationToken) {
-        initialize();
-        SubscriptionManagerState current = state;
-        if (current == null) return false;
-        try {
-            return current.rollbackManualHideForSwipe(
-                    videoId, expectedAccountNamespace, mutationToken);
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
     /** Reapplies a persisted manual hide when RecyclerView binds the card again. */
     static boolean isVideoManuallyHiddenForSwipe(
             String videoId, String expectedAccountNamespace) {

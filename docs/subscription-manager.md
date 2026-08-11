@@ -4,7 +4,7 @@ The experimental patch filters supported root cards in the Subscriptions feed. T
 
 On YouTube 20.40.45, active identity transitions and startup hydration select a hashed per-account namespace. Incognito and unresolved identities use isolated, nonpersistent state. The hook reads only YouTube's stable identity ID and incognito flag; it never reads or stores the account name or email.
 
-A separate **Experimental: Swipe to hide** setting is visible and off by default. A confirmed left swipe persists a local per-account hide only when the bound RecyclerView item and the exact attested source route agree on identity and position. Removal mutates the supported source leaf and otherwise fails open; a failed mutation rolls back a newly persisted hide. Persisted hides are reapplied when a supported entry binds again.
+A separate **Experimental: Swipe to hide** setting is visible and off by default. A confirmed left swipe persists a local per-account hide only when the bound RecyclerView item and the exact attested source route agree on identity and position. Vertical or ambiguous diagonal movement cancels the gesture, and completion requires substantial horizontal travel. Removal mutates the supported source leaf when its delayed plan is still current. Once the swipe is confirmed and persisted, a stale visual-removal plan does not undo the user's decision; persisted hides are reapplied when a supported entry binds again.
 
 The swipe beta has not passed device validation. Pagination and live/upcoming entries remain unverified. Channel hiding and feed red-bar progress detection are not implemented. Every hook must demonstrate safe lifecycle and failure behavior before the patch declares another compatible YouTube version.
 

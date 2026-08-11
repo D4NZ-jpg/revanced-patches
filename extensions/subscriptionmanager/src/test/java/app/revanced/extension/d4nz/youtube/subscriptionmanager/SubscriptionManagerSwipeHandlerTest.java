@@ -76,21 +76,49 @@ public final class SubscriptionManagerSwipeHandlerTest {
     }
 
     @Test
-    public void leftSwipeConsumesOnlyAfterIntentAndCompletesOnUp() {
+    public void leftSwipeRequiresIntentAndCommitDistance() {
         SubscriptionManagerSwipeHandler.GestureClassifier classifier = classifier();
         classifier.onDown(100, 100);
-        assertEquals(Result.PASS, classifier.onEvent(MotionEvent.ACTION_MOVE, 1, 80, 102));
-        assertEquals(Result.CONSUME, classifier.onEvent(MotionEvent.ACTION_MOVE, 1, 45, 103));
-        assertEquals(Result.COMPLETE, classifier.onEvent(MotionEvent.ACTION_UP, 1, 45, 103));
+        assertEquals(Result.PASS,
+                classifier.onEvent(MotionEvent.ACTION_MOVE, 1, 82, 102, 48));
+        assertEquals(Result.CONSUME,
+                classifier.onEvent(MotionEvent.ACTION_MOVE, 1, 70, 103, 48));
+        assertEquals(Result.COMPLETE,
+                classifier.onEvent(MotionEvent.ACTION_UP, 1, 45, 104, 48));
     }
 
     @Test
-    public void shortRightVerticalMultitouchAndCancelNeverConsume() {
+    public void verticalDiagonalRightMultitouchAndCancelLockOutSwipe() {
         assertPassesWithoutCompletion(MotionEvent.ACTION_UP, 1, 80, 100);
-        assertCancelled(MotionEvent.ACTION_MOVE, 1, 155, 100);
-        assertCancelled(MotionEvent.ACTION_MOVE, 1, 95, 155);
+        assertCancelled(MotionEvent.ACTION_MOVE, 1, 110, 100);
+        assertCancelled(MotionEvent.ACTION_MOVE, 1, 95, 112);
+        assertCancelled(MotionEvent.ACTION_MOVE, 1, 70, 118);
         assertCancelled(MotionEvent.ACTION_POINTER_DOWN, 2, 90, 100);
         assertCancelled(MotionEvent.ACTION_CANCEL, 1, 90, 100);
+    }
+
+    @Test
+    public void confirmedSwipeCancelsOnShortReleaseReversalOrVerticalDrift() {
+        SubscriptionManagerSwipeHandler.GestureClassifier shortSwipe = classifier();
+        shortSwipe.onDown(100, 100);
+        assertEquals(Result.CONSUME,
+                shortSwipe.onEvent(MotionEvent.ACTION_MOVE, 1, 70, 102, 48));
+        assertEquals(Result.CANCELLED,
+                shortSwipe.onEvent(MotionEvent.ACTION_UP, 1, 60, 102, 48));
+
+        SubscriptionManagerSwipeHandler.GestureClassifier reversal = classifier();
+        reversal.onDown(100, 100);
+        assertEquals(Result.CONSUME,
+                reversal.onEvent(MotionEvent.ACTION_MOVE, 1, 70, 102, 48));
+        assertEquals(Result.CANCELLED,
+                reversal.onEvent(MotionEvent.ACTION_MOVE, 1, 95, 102, 48));
+
+        SubscriptionManagerSwipeHandler.GestureClassifier verticalDrift = classifier();
+        verticalDrift.onDown(100, 100);
+        assertEquals(Result.CONSUME,
+                verticalDrift.onEvent(MotionEvent.ACTION_MOVE, 1, 70, 102, 48));
+        assertEquals(Result.CANCELLED,
+                verticalDrift.onEvent(MotionEvent.ACTION_MOVE, 1, 55, 125, 48));
     }
 
     @Test
@@ -123,10 +151,21 @@ public final class SubscriptionManagerSwipeHandlerTest {
     }
 
     @Test
-    public void staleRemovalAttemptKeepsHideWhenExactPlanAlreadyReachedPostcondition() {
-        assertTrue(SubscriptionManagerSwipeHandler.removalAttemptSucceeded(false, true));
-        assertTrue(SubscriptionManagerSwipeHandler.removalAttemptSucceeded(true, false));
-        assertFalse(SubscriptionManagerSwipeHandler.removalAttemptSucceeded(false, false));
+    public void currentPersistedHideRebindsOnlyWhenBothRemovalPlansFail() {
+        assertTrue(SubscriptionManagerSwipeHandler.shouldRequestPersistedHideRebind(
+                true, false, false));
+        assertFalse(SubscriptionManagerSwipeHandler.shouldRequestPersistedHideRebind(
+                false, false, false));
+        assertFalse(SubscriptionManagerSwipeHandler.shouldRequestPersistedHideRebind(
+                true, true, false));
+        assertFalse(SubscriptionManagerSwipeHandler.shouldRequestPersistedHideRebind(
+                true, false, true));
+        assertTrue(SubscriptionManagerSwipeHandler.shouldRestorePersistedHidePresentation(
+                true, false));
+        assertFalse(SubscriptionManagerSwipeHandler.shouldRestorePersistedHidePresentation(
+                true, true));
+        assertFalse(SubscriptionManagerSwipeHandler.shouldRestorePersistedHidePresentation(
+                false, false));
     }
 
     @Test
@@ -158,20 +197,21 @@ public final class SubscriptionManagerSwipeHandlerTest {
     }
 
     private static SubscriptionManagerSwipeHandler.GestureClassifier classifier() {
-        return new SubscriptionManagerSwipeHandler.GestureClassifier(48, 1.2f);
+        return new SubscriptionManagerSwipeHandler.GestureClassifier(8, 24, 2f);
     }
 
     private static void assertPassesWithoutCompletion(int action, int pointers, float x, float y) {
         SubscriptionManagerSwipeHandler.GestureClassifier classifier = classifier();
         classifier.onDown(100, 100);
-        assertEquals(Result.PASS, classifier.onEvent(action, pointers, x, y));
+        assertEquals(Result.PASS, classifier.onEvent(action, pointers, x, y, 48));
     }
 
     private static void assertCancelled(int action, int pointers, float x, float y) {
         SubscriptionManagerSwipeHandler.GestureClassifier classifier = classifier();
         classifier.onDown(100, 100);
-        assertEquals(Result.CANCELLED, classifier.onEvent(action, pointers, x, y));
-        assertEquals(Result.PASS, classifier.onEvent(MotionEvent.ACTION_UP, 1, x, y));
+        assertEquals(Result.CANCELLED, classifier.onEvent(action, pointers, x, y, 48));
+        assertEquals(Result.PASS,
+                classifier.onEvent(MotionEvent.ACTION_UP, 1, x, y, 48));
     }
 
     private static Object newSourceItem(String className, byte[] payload) throws Exception {

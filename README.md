@@ -41,7 +41,7 @@ Manager loads this bundle together with the official bundle. The URL remains the
 A local, opt-in filter for regular videos in YouTube's Subscriptions feed.
 
 - Hides supported regular videos when local playback reaches the configured watched threshold.
-- Offers a separate, default-off **Experimental: Swipe to hide** beta that locally hides supported entries after a left swipe.
+- Offers a separate, default-off **Experimental: Swipe to hide** beta that locally hides supported entries after a deliberate left swipe and preserves confirmed decisions across stale visual updates.
 - Separates persistent state using hashed per-account namespaces.
 - Keeps incognito and unresolved sessions isolated and nonpersistent.
 - Fails open when card identity or progress cannot be established safely.

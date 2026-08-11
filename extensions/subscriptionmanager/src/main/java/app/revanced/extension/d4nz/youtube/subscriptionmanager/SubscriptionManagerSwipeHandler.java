@@ -24,8 +24,10 @@ import app.revanced.extension.youtube.shared.NavigationBar.NavigationButton;
 public final class SubscriptionManagerSwipeHandler {
     static final int MAX_PAYLOAD_BYTES = 64 * 1024;
     private static final int MAX_PARENT_DEPTH = 16;
-    private static final float MIN_SWIPE_DP = 48f;
-    private static final float HORIZONTAL_DOMINANCE = 1.2f;
+    private static final float MIN_SWIPE_ACTIVATION_DP = 24f;
+    private static final float MIN_SWIPE_COMMIT_DP = 96f;
+    private static final float SWIPE_COMMIT_WIDTH_FRACTION = 0.35f;
+    private static final float HORIZONTAL_DOMINANCE = 2f;
     private static final long SWIPE_SETTLE_DURATION_MS = 160L;
     private static final long SWIPE_RETURN_DURATION_MS = 120L;
 
@@ -156,8 +158,6 @@ public final class SubscriptionManagerSwipeHandler {
                                 videoId, accountNamespace);
                 if (persistence.status != SubscriptionManagerState.SWIPE_PERSIST_FAILED
                         && executeSourceRemoval(plan)) {
-                    SubscriptionManager.commitManualHideForSwipe(
-                            videoId, accountNamespace, persistence.mutationToken);
                     return;
                 }
                 // Keep a normal binding when reapplying a persisted hide fails. The visible row
@@ -315,14 +315,6 @@ public final class SubscriptionManagerSwipeHandler {
                 remainingAdapterCount, remainingSourceCount, remainingLeafCount);
     }
 
-    private static boolean hasRemovalPostcondition(RemovalPlan plan) {
-        try {
-            return plan != null && removalPostcondition(plan);
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
     static boolean removalPostconditionCounts(
             int adapterCount, int sourceCount, int leafCount,
             int remainingAdapterCount, int remainingSourceCount, int remainingLeafCount) {
@@ -331,9 +323,16 @@ public final class SubscriptionManagerSwipeHandler {
                 && remainingLeafCount == leafCount - 1;
     }
 
-    static boolean removalAttemptSucceeded(
-            boolean executionSucceeded, boolean exactPlanPostconditionReached) {
-        return executionSucceeded || exactPlanPostconditionReached;
+    static boolean shouldRequestPersistedHideRebind(
+            boolean bindingCurrent,
+            boolean originalRemovalSucceeded,
+            boolean refreshedRemovalSucceeded) {
+        return bindingCurrent && !originalRemovalSucceeded && !refreshedRemovalSucceeded;
+    }
+
+    static boolean shouldRestorePersistedHidePresentation(
+            boolean rebindRequired, boolean rebindSucceeded) {
+        return rebindRequired && !rebindSucceeded;
     }
 
     static boolean attestCounts(
@@ -373,6 +372,19 @@ public final class SubscriptionManagerSwipeHandler {
         Method method = nvDeclaration.getDeclaredMethod("b");
         if (Modifier.isStatic(method.getModifiers()) || method.getReturnType() != Integer.TYPE) {
             throw new NoSuchMethodException("b");
+        }
+        if (!method.isAccessible()) method.setAccessible(true);
+        return method;
+    }
+
+    private static Method adapterNotifyItemChangedMethod(Object adapter) throws Exception {
+        Class<?> mxDeclaration = namedClassInHierarchy(adapter, "mx");
+        if (mxDeclaration == null) throw new NoSuchMethodException("hf");
+        Method method = mxDeclaration.getDeclaredMethod("hf", Integer.TYPE);
+        int modifiers = method.getModifiers();
+        if (Modifier.isStatic(modifiers) || !Modifier.isPublic(modifiers)
+                || !Modifier.isFinal(modifiers) || method.getReturnType() != Void.TYPE) {
+            throw new NoSuchMethodException("hf");
         }
         if (!method.isAccessible()) method.setAccessible(true);
         return method;
@@ -501,9 +513,6 @@ public final class SubscriptionManagerSwipeHandler {
                 item.removeCallbacks(attempt);
                 return false;
             }
-            attempt.mutationToken = persistence.mutationToken;
-            attempt.rollbackRequired =
-                    persistence.status == SubscriptionManagerState.SWIPE_PERSIST_ADDED;
             attempt.persistenceReady = true;
         }
         try {
@@ -516,8 +525,11 @@ public final class SubscriptionManagerSwipeHandler {
             return true;
         } catch (Throwable failure) {
             item.removeCallbacks(attempt);
-            attempt.rollbackAndRestore();
-            return false;
+            if (!executeSourceRemoval(plan)
+                    && !requestPersistedHideRebind(binding)) {
+                restoreBindingPresentation(binding);
+            }
+            return true;
         }
     }
 
@@ -533,6 +545,16 @@ public final class SubscriptionManagerSwipeHandler {
             item.setAlpha(1f - progress * 0.4f);
         } catch (Throwable ignored) {
         }
+    }
+
+    private static void restoreBindingPresentation(Binding binding) {
+        View item = binding == null ? null : binding.item();
+        if (item == null) return;
+        Presentation presentation;
+        synchronized (LOCK) {
+            presentation = PRESENTATIONS.get(item);
+        }
+        restorePresentation(item, presentation);
     }
 
     private static void animateBack(Binding binding) {
@@ -552,6 +574,28 @@ public final class SubscriptionManagerSwipeHandler {
                     .setDuration(SWIPE_RETURN_DURATION_MS)
                     .start();
         } catch (Throwable ignored) {
+        }
+    }
+
+    private static boolean requestPersistedHideRebind(Binding binding) {
+        try {
+            View item = binding == null ? null : binding.item();
+            RecyclerView recyclerView = binding == null ? null : binding.recyclerView();
+            if (item == null || recyclerView == null || !item.isAttachedToWindow()
+                    || !isCurrent(binding)) return false;
+            Field adapterField = RecyclerView.class.getField("k");
+            if (Modifier.isStatic(adapterField.getModifiers())) return false;
+            Object adapter = adapterField.get(recyclerView);
+            if (!isExactNamed(adapter, "gnw")) return false;
+            Object holder = RecyclerView.class.getMethod("m", View.class).invoke(null, item);
+            int position = (Integer) holderPositionMethod(holder).invoke(holder);
+            Method countMethod = exactInstanceMethod(adapter, "gnw", "a", Integer.TYPE);
+            int count = (Integer) countMethod.invoke(adapter);
+            if (position < 0 || position >= count) return false;
+            adapterNotifyItemChangedMethod(adapter).invoke(adapter, position);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
@@ -669,6 +713,7 @@ public final class SubscriptionManagerSwipeHandler {
     private static final class RecyclerTouchListener implements InvocationHandler {
         private final WeakReference<RecyclerView> recyclerView;
         private final GestureClassifier classifier;
+        private final float minimumCommitDistance;
         private Binding active;
         private float downX;
         private Object proxy;
@@ -676,9 +721,13 @@ public final class SubscriptionManagerSwipeHandler {
         RecyclerTouchListener(RecyclerView recyclerView) {
             this.recyclerView = new WeakReference<>(recyclerView);
             float density = recyclerView.getResources().getDisplayMetrics().density;
-            float threshold = Math.max(ViewConfiguration.get(recyclerView.getContext()).getScaledTouchSlop(),
-                    MIN_SWIPE_DP * density);
-            classifier = new GestureClassifier(threshold, HORIZONTAL_DOMINANCE);
+            float touchSlop = ViewConfiguration.get(
+                    recyclerView.getContext()).getScaledTouchSlop();
+            float activationDistance = Math.max(
+                    touchSlop, MIN_SWIPE_ACTIVATION_DP * density);
+            minimumCommitDistance = MIN_SWIPE_COMMIT_DP * density;
+            classifier = new GestureClassifier(
+                    touchSlop, activationDistance, HORIZONTAL_DOMINANCE);
         }
 
         @Override
@@ -726,7 +775,7 @@ public final class SubscriptionManagerSwipeHandler {
                     return false;
                 }
                 GestureClassifier.Result result = classifier.onEvent(event.getActionMasked(),
-                        event.getPointerCount(), event.getX(), event.getY());
+                        event.getPointerCount(), event.getX(), event.getY(), commitDistance());
                 if (result == GestureClassifier.Result.CONSUME) {
                     updateDrag(active, event.getX() - downX);
                 } else if (result == GestureClassifier.Result.CANCELLED) {
@@ -755,7 +804,7 @@ public final class SubscriptionManagerSwipeHandler {
                     return;
                 }
                 GestureClassifier.Result result = classifier.onEvent(event.getActionMasked(),
-                        event.getPointerCount(), event.getX(), event.getY());
+                        event.getPointerCount(), event.getX(), event.getY(), commitDistance());
                 if (result == GestureClassifier.Result.CONSUME) {
                     updateDrag(active, event.getX() - downX);
                 } else if (result == GestureClassifier.Result.COMPLETE) {
@@ -771,6 +820,13 @@ public final class SubscriptionManagerSwipeHandler {
             }
         }
 
+        private float commitDistance() {
+            View item = active == null ? null : active.item();
+            return Math.max(minimumCommitDistance,
+                    Math.max(item == null ? 0 : item.getWidth(), 1)
+                            * SWIPE_COMMIT_WIDTH_FRACTION);
+        }
+
         boolean references(View item) {
             return active != null && active.item() == item;
         }
@@ -783,15 +839,17 @@ public final class SubscriptionManagerSwipeHandler {
 
     static final class GestureClassifier {
         enum Result { PASS, CONSUME, COMPLETE, CANCELLED }
-        private final float threshold;
+        private final float touchSlop;
+        private final float activationDistance;
         private final float dominance;
         private boolean tracking;
         private boolean confirmed;
         private float downX;
         private float downY;
 
-        GestureClassifier(float threshold, float dominance) {
-            this.threshold = threshold;
+        GestureClassifier(float touchSlop, float activationDistance, float dominance) {
+            this.touchSlop = touchSlop;
+            this.activationDistance = activationDistance;
             this.dominance = dominance;
         }
 
@@ -802,7 +860,8 @@ public final class SubscriptionManagerSwipeHandler {
             downY = y;
         }
 
-        Result onEvent(int action, int pointerCount, float x, float y) {
+        Result onEvent(
+                int action, int pointerCount, float x, float y, float commitDistance) {
             if (!tracking) return Result.PASS;
             if (pointerCount != 1 || action == MotionEvent.ACTION_POINTER_DOWN
                     || action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_CANCEL) {
@@ -810,23 +869,36 @@ public final class SubscriptionManagerSwipeHandler {
                 return Result.CANCELLED;
             }
             float dx = x - downX;
-            float dy = y - downY;
-            float absDy = Math.abs(dy);
+            float leftDistance = -dx;
+            float absDx = Math.abs(dx);
+            float absDy = Math.abs(y - downY);
             if (!confirmed && action == MotionEvent.ACTION_MOVE) {
-                if (dx >= threshold || absDy >= threshold && absDy >= Math.abs(dx)) {
+                if (dx >= touchSlop
+                        || absDy >= touchSlop && absDx <= absDy * dominance) {
                     reset();
                     return Result.CANCELLED;
                 }
-                if (-dx >= threshold && -dx > absDy * dominance) {
+                if (leftDistance >= activationDistance
+                        && leftDistance > absDy * dominance) {
                     confirmed = true;
                     return Result.CONSUME;
                 }
                 return Result.PASS;
             }
+            if (confirmed && action == MotionEvent.ACTION_MOVE) {
+                if (leftDistance < touchSlop || leftDistance <= absDy * dominance) {
+                    reset();
+                    return Result.CANCELLED;
+                }
+                return Result.CONSUME;
+            }
             if (action == MotionEvent.ACTION_UP) {
-                boolean complete = confirmed;
+                boolean complete = confirmed && leftDistance >= commitDistance
+                        && leftDistance > absDy * dominance;
+                boolean wasConfirmed = confirmed;
                 reset();
-                return complete ? Result.COMPLETE : Result.PASS;
+                return complete ? Result.COMPLETE
+                        : wasConfirmed ? Result.CANCELLED : Result.PASS;
             }
             return confirmed ? Result.CONSUME : Result.PASS;
         }
@@ -861,8 +933,6 @@ public final class SubscriptionManagerSwipeHandler {
         private final Binding binding;
         private final RemovalPlan plan;
         volatile boolean persistenceReady;
-        volatile boolean rollbackRequired;
-        volatile long mutationToken;
 
         RemovalAttempt(Binding binding, RemovalPlan plan) {
             this.binding = binding;
@@ -877,32 +947,26 @@ public final class SubscriptionManagerSwipeHandler {
                 current = persistenceReady && item != null && ITEMS.get(item) == binding
                         && VERSIONS.isCurrent(binding.version);
             }
-            boolean executionSucceeded = current && executeSourceRemoval(plan);
-            if (removalAttemptSucceeded(executionSucceeded, hasRemovalPostcondition(plan))) {
-                sourceRemovalCompleted();
-                return;
+            boolean originalRemovalSucceeded = current && executeSourceRemoval(plan);
+            boolean refreshedRemovalSucceeded = false;
+            if (current && !originalRemovalSucceeded) {
+                RecyclerView recyclerView = binding.recyclerView();
+                View item = binding.item();
+                RemovalPlan refreshed = attestSourceRemoval(recyclerView, item);
+                refreshedRemovalSucceeded = refreshed != null
+                        && binding.videoId.equals(refreshed.videoId)
+                        && executeSourceRemoval(refreshed);
             }
-            rollbackAndRestore();
-        }
-
-        private void sourceRemovalCompleted() {
-            rollbackRequired = false;
-            SubscriptionManager.commitManualHideForSwipe(
-                    binding.videoId, binding.accountNamespace, mutationToken);
-        }
-
-        void rollbackAndRestore() {
-            // Rebind or detach can synchronously remove the same attested item before this delayed
-            // attempt runs. Never undo its persisted hide after the exact plan already completed.
-            if (hasRemovalPostcondition(plan)) {
-                sourceRemovalCompleted();
-                return;
+            boolean rebindRequired = shouldRequestPersistedHideRebind(
+                    current, originalRemovalSucceeded, refreshedRemovalSucceeded);
+            boolean rebindSucceeded = rebindRequired && requestPersistedHideRebind(binding);
+            if (shouldRestorePersistedHidePresentation(rebindRequired, rebindSucceeded)) {
+                animateBack(binding);
             }
-            if (rollbackRequired && SubscriptionManager.rollbackManualHideForSwipe(
-                    binding.videoId, binding.accountNamespace, mutationToken)) {
-                rollbackRequired = false;
-            }
-            animateBack(binding);
+            // Persistence is the user-visible result of a completed swipe. A delayed source plan
+            // can become stale while the row animates or detaches; never reinterpret that race as
+            // an undo. A current row is removed through a refreshed plan or rebound so the Litho
+            // filter can apply the persisted decision without leaving a blank item.
         }
     }
 
