@@ -100,11 +100,15 @@ jobs:
           unzip -p "$bundle" extensions/subscriptionmanager.rve > subscriptionmanager.rve
           dexdump=$(find "$ANDROID_HOME/build-tools" -type f -name dexdump | sort -V | tail -1)
           test -x "$dexdump"
-          "$dexdump" subscriptionmanager.rve > subscriptionmanager-dex.txt
+          "$dexdump" -d subscriptionmanager.rve > subscriptionmanager-dex.txt
           unexpected_runtime_classes=$(awk -F"'" '/Class descriptor/{print $2}' \
             subscriptionmanager-dex.txt \
             | grep -v '^Lapp/revanced/extension/d4nz/' || true)
           test -z "$unexpected_runtime_classes"
+          grep -Fq 'Logger;.printDebug:(Lapp/revanced/extension/shared/Logger$LogMessage;)V' \
+            subscriptionmanager-dex.txt
+          ! grep -Fq 'Logger;.printDebug:(Ljava/util/function/Supplier;)V' \
+            subscriptionmanager-dex.txt
 
           cp "$bundle" "patches-${VERSION#v}.rvp"
           echo "PATCH_ASSET=patches-${VERSION#v}.rvp" >> "$GITHUB_ENV"
