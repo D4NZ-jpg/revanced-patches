@@ -94,12 +94,54 @@ public final class SubscriptionManager {
     }
 
     /** Fail-open persistence facade used only after a confirmed swipe. */
-    static boolean manuallyHideVideoForSwipe(String videoId, String expectedAccountNamespace) {
+    static SubscriptionManagerState.SwipePersistence persistManualHideForSwipe(
+            String videoId, String expectedAccountNamespace) {
+        initialize();
+        SubscriptionManagerState current = state;
+        if (current == null) return SubscriptionManagerState.SwipePersistence.FAILED;
+        try {
+            return current.persistManualHideForSwipe(videoId, expectedAccountNamespace);
+        } catch (Throwable ignored) {
+            return SubscriptionManagerState.SwipePersistence.FAILED;
+        }
+    }
+
+    /** Clears transient mutation ownership after the source reaches the exact postcondition. */
+    static boolean commitManualHideForSwipe(
+            String videoId, String expectedAccountNamespace, long mutationToken) {
         initialize();
         SubscriptionManagerState current = state;
         if (current == null) return false;
         try {
-            return current.manuallyHideVideoPersistently(videoId, expectedAccountNamespace);
+            return current.commitManualHideForSwipe(
+                    videoId, expectedAccountNamespace, mutationToken);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** Removes only a newly-created swipe decision after a failed source mutation. */
+    static boolean rollbackManualHideForSwipe(
+            String videoId, String expectedAccountNamespace, long mutationToken) {
+        initialize();
+        SubscriptionManagerState current = state;
+        if (current == null) return false;
+        try {
+            return current.rollbackManualHideForSwipe(
+                    videoId, expectedAccountNamespace, mutationToken);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** Reapplies a persisted manual hide when RecyclerView binds the card again. */
+    static boolean isVideoManuallyHiddenForSwipe(
+            String videoId, String expectedAccountNamespace) {
+        initialize();
+        SubscriptionManagerState current = state;
+        if (current == null) return false;
+        try {
+            return current.isVideoManuallyHidden(videoId, expectedAccountNamespace);
         } catch (Throwable ignored) {
             return false;
         }

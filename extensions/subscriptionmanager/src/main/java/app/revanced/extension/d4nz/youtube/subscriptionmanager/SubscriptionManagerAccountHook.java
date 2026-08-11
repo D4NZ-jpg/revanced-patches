@@ -31,6 +31,17 @@ public final class SubscriptionManagerAccountHook {
         }
     }
 
+    /** Hydrates a process that reuses YouTube's already-loaded active identity state. */
+    public static void hydrateAccountFromActiveIdentity(Object identity) {
+        SubscriptionManagerAccount account = resolveSafely(identity);
+        synchronized (ACCOUNT_LOCK) {
+            if (transitionGeneration != 0 || pendingAccount.equals(account)) return;
+            pendingAccount = account;
+        }
+        SubscriptionManagerSwipeHandler.invalidateAllOwnership();
+        applyLatestAccount(0);
+    }
+
     static long beginTransition() {
         synchronized (ACCOUNT_LOCK) {
             transitionGeneration++;

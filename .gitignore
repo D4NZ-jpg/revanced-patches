@@ -127,3 +127,6 @@ node_modules/
 
 # Ignore IDEA files
 .idea/
+
+# Local agent artifacts
+.pi-subagents/

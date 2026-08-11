@@ -41,6 +41,14 @@ internal val BytecodePatchContext.regularLithoCardBindMethod by gettingFirstMeth
     )
 }
 
+/** Resolves YouTube's already-loaded active identity after process restoration. */
+internal val BytecodePatchContext.resolvedAccountIdentityMethod by gettingFirstMethodDeclaratively {
+    accessFlags(AccessFlags.PUBLIC, AccessFlags.FINAL)
+    parameterTypes()
+    returnType("Lajth;")
+    strings("DefaultIdentityResolver could not resolve ")
+}
+
 /**
  * The active identity persistence transition. The signature and preference literals intentionally
  * identify the method structurally; its obfuscated class and method names are not stable.

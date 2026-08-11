@@ -42,9 +42,37 @@ public final class SubscriptionManagerSwipeHandlerTest {
     }
 
     @Test
-    public void verifiedRouteRejectsObjectsWithoutExactTargetClassChain() {
-        assertNull(SubscriptionManagerSwipeHandler.extractVideoIdFromVerifiedRoute(
-                new NearbyComponent(fieldOne(FIRST))));
+    public void invalidEarlierFieldOneDoesNotRejectLaterValidEmbeddedId() {
+        assertEquals(FIRST, SubscriptionManagerSwipeHandler.extractEarliestFieldOneVideoId(
+                concat(fieldOne("bad!def-123"), fieldOne(FIRST))));
+    }
+
+    @Test
+    public void sourceItemRequiresAmtjHierarchyAndReadsOnlyAmtjPayloadField() throws Exception {
+        assertNull(SubscriptionManagerSwipeHandler.extractSourceItemVideoId(
+                new NearbySourceItem(fieldOne(FIRST))));
+        assertEquals(FIRST, SubscriptionManagerSwipeHandler.extractSourceItemVideoId(
+                newSourceItem("amtj", fieldOne(FIRST))));
+        assertEquals(FIRST, SubscriptionManagerSwipeHandler.extractSourceItemVideoId(
+                newSourceItem("amtjChild", fieldOne(FIRST))));
+    }
+
+    @Test
+    public void groupedAmviSourceItemsAreRejectedEvenThroughSubclasses() throws Exception {
+        assertNull(SubscriptionManagerSwipeHandler.extractSourceItemVideoId(
+                newSourceItem("amvi", fieldOne(FIRST))));
+        assertNull(SubscriptionManagerSwipeHandler.extractSourceItemVideoId(
+                newSourceItem("amviChild", fieldOne(FIRST))));
+    }
+
+    @Test
+    public void holderSubclassesResolvePositionMethodOnlyFromNvDeclaration() throws Exception {
+        for (String holderClass : new String[]{"gnt", "angw"}) {
+            Object holder = newNamedInstance(holderClass);
+            Method method = SubscriptionManagerSwipeHandler.holderPositionMethod(holder);
+            assertEquals("nv", method.getDeclaringClass().getName());
+            assertEquals(17, method.invoke(holder));
+        }
     }
 
     @Test
@@ -70,6 +98,35 @@ public final class SubscriptionManagerSwipeHandlerTest {
         Method child = RecyclerView.class.getDeclaredMethod("o", float.class, float.class);
         assertTrue(Modifier.isPublic(child.getModifiers()) && Modifier.isFinal(child.getModifiers()));
         assertEquals(View.class, child.getReturnType());
+    }
+
+    @Test
+    public void sourceRemovalCountGuardAcceptsOnlyBoundedUnambiguousPositions() {
+        assertTrue(SubscriptionManagerSwipeHandler.attestCounts(8, 8, 3, 6, 1));
+        assertFalse(SubscriptionManagerSwipeHandler.attestCounts(8, 7, 3, 6, 1));
+        assertFalse(SubscriptionManagerSwipeHandler.attestCounts(8, 8, 3, 8, 1));
+        assertFalse(SubscriptionManagerSwipeHandler.attestCounts(8, 8, 9, 6, 1));
+        assertFalse(SubscriptionManagerSwipeHandler.attestCounts(8, 8, 3, 6, 3));
+        assertFalse(SubscriptionManagerSwipeHandler.attestCounts(0, 0, 0, 0, 0));
+    }
+
+    @Test
+    public void sourceRemovalPostconditionRequiresAllThreeCountsToDecrementTogether() {
+        assertTrue(SubscriptionManagerSwipeHandler.removalPostconditionCounts(
+                8, 8, 3, 7, 7, 2));
+        assertFalse(SubscriptionManagerSwipeHandler.removalPostconditionCounts(
+                8, 8, 3, 8, 7, 2));
+        assertFalse(SubscriptionManagerSwipeHandler.removalPostconditionCounts(
+                8, 8, 3, 7, 8, 2));
+        assertFalse(SubscriptionManagerSwipeHandler.removalPostconditionCounts(
+                8, 8, 3, 7, 7, 3));
+    }
+
+    @Test
+    public void staleRemovalAttemptKeepsHideWhenExactPlanAlreadyReachedPostcondition() {
+        assertTrue(SubscriptionManagerSwipeHandler.removalAttemptSucceeded(false, true));
+        assertTrue(SubscriptionManagerSwipeHandler.removalAttemptSucceeded(true, false));
+        assertFalse(SubscriptionManagerSwipeHandler.removalAttemptSucceeded(false, false));
     }
 
     @Test
@@ -117,6 +174,20 @@ public final class SubscriptionManagerSwipeHandlerTest {
         assertEquals(Result.PASS, classifier.onEvent(MotionEvent.ACTION_UP, 1, x, y));
     }
 
+    private static Object newSourceItem(String className, byte[] payload) throws Exception {
+        java.lang.reflect.Constructor<?> constructor =
+                Class.forName(className).getDeclaredConstructor(byte[].class);
+        constructor.setAccessible(true);
+        return constructor.newInstance((Object) payload);
+    }
+
+    private static Object newNamedInstance(String className) throws Exception {
+        java.lang.reflect.Constructor<?> constructor =
+                Class.forName(className).getDeclaredConstructor();
+        constructor.setAccessible(true);
+        return constructor.newInstance();
+    }
+
     private static byte[] fieldOne(String value) {
         byte[] ascii = value.getBytes(StandardCharsets.US_ASCII);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -132,12 +203,12 @@ public final class SubscriptionManagerSwipeHandlerTest {
         return output.toByteArray();
     }
 
-    private static final class NearbyComponent {
+    private static final class NearbySourceItem {
         @SuppressWarnings("unused")
-        final Object e;
+        final byte[] c;
 
-        NearbyComponent(Object routeCandidate) {
-            e = routeCandidate;
+        NearbySourceItem(byte[] payload) {
+            c = payload;
         }
     }
 }

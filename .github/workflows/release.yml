@@ -75,7 +75,7 @@ jobs:
         env:
           ORG_GRADLE_PROJECT_githubPackagesUsername: ${{ github.actor }}
           ORG_GRADLE_PROJECT_githubPackagesPassword: ${{ secrets.GITHUB_TOKEN }}
-        run: ./gradlew clean :extensions:subscriptionmanager:testDebugUnitTest :patches:buildAndroid --no-daemon
+        run: ./gradlew clean :extensions:subscriptionmanager:testDebugUnitTest :extensions:subscriptionmanager:lintDebug :patches:buildAndroid :patches:checkLegacyAbi --no-daemon
 
       - name: Verify custom-only bundle
         env:

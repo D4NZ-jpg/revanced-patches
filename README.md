@@ -41,6 +41,7 @@ Manager loads this bundle together with the official bundle. The URL remains the
 A local, opt-in filter for regular videos in YouTube's Subscriptions feed.
 
 - Hides supported regular videos when local playback reaches the configured watched threshold.
+- Offers a separate, default-off **Experimental: Swipe to hide** beta that locally hides supported entries after a left swipe.
 - Separates persistent state using hashed per-account namespaces.
 - Keeps incognito and unresolved sessions isolated and nonpersistent.
 - Fails open when card identity or progress cannot be established safely.
@@ -48,8 +49,8 @@ A local, opt-in filter for regular videos in YouTube's Subscriptions feed.
 
 Enable it under ReVanced's **Feed** settings after patching.
 
-> [!NOTE]
-> Swipe-to-hide, the **Hide channel** menu action, and feed red-bar progress detection are not implemented. They remain disabled until safe runtime hooks are verified.
+> [!WARNING]
+> Swipe-to-hide is experimental and has not passed device validation. Pagination and live/upcoming entries are unverified. The **Hide channel** menu action and feed red-bar progress detection are not implemented.
 
 See [Subscription manager technical notes](docs/subscription-manager.md) for design and validation details.
 

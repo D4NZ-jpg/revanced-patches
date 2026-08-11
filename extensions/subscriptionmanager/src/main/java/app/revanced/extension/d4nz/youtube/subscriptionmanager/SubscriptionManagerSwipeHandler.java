@@ -1,9 +1,11 @@
 package app.revanced.extension.d4nz.youtube.subscriptionmanager;
 
+import android.os.Looper;
 import android.support.v7.widget.RecyclerView;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.ViewGroup;
 import android.view.ViewParent;
 
 import java.lang.ref.WeakReference;
@@ -13,7 +15,6 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
-import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.WeakHashMap;
 
@@ -22,11 +23,11 @@ import app.revanced.extension.youtube.shared.NavigationBar.NavigationButton;
 /** Runtime-gated swipe ownership and gesture bridge for the verified YouTube 20.40.45 bind route. */
 public final class SubscriptionManagerSwipeHandler {
     static final int MAX_PAYLOAD_BYTES = 64 * 1024;
-    private static final int MAX_MODEL_WRAPPERS = 8;
-    private static final int MAX_CALLABLE_WRAPPERS = 4;
     private static final int MAX_PARENT_DEPTH = 16;
     private static final float MIN_SWIPE_DP = 48f;
     private static final float HORIZONTAL_DOMINANCE = 1.2f;
+    private static final long SWIPE_SETTLE_DURATION_MS = 160L;
+    private static final long SWIPE_RETURN_DURATION_MS = 120L;
 
     private static final Object LOCK = new Object();
     private static final WeakHashMap<View, RootOwnership> ROOTS = new WeakHashMap<>();
@@ -58,13 +59,10 @@ public final class SubscriptionManagerSwipeHandler {
                 discardPending(root, version);
                 return;
             }
-            String videoId = extractVideoIdFromVerifiedRoute(component);
-            if (videoId == null || !recordPendingIdentity(root, version, videoId)) {
-                discardPending(root, version);
-                return;
-            }
 
-            // Parentage can settle after the bind call. Publishing always uses the same stale-safe path.
+            // Parentage and the holder position can settle after the bind call. Publishing always
+            // resolves identity from the current authoritative source item, never from recycled UI.
+
             WeakReference<View> rootReference = new WeakReference<>(root);
             try {
                 if (!root.post(new PublishRunnable(rootReference, version))) {
@@ -94,24 +92,11 @@ public final class SubscriptionManagerSwipeHandler {
         }
     }
 
-    private static boolean recordPendingIdentity(
-            View root, SubscriptionManagerSwipeVersion.Token version, String videoId) {
-        synchronized (LOCK) {
-            RootOwnership ownership = ROOTS.get(root);
-            if (ownership == null || !ownership.matches(version)) return false;
-            ownership.videoId = videoId;
-            return true;
-        }
-    }
-
     private static void publishPending(
             View root, SubscriptionManagerSwipeVersion.Token version) {
-        String videoId;
         synchronized (LOCK) {
             RootOwnership ownership = ROOTS.get(root);
-            if (ownership == null || !ownership.matches(version)
-                    || ownership.videoId == null) return;
-            videoId = ownership.videoId;
+            if (ownership == null || !ownership.matches(version)) return;
         }
         ItemRoute route = findDirectRecyclerItem(root);
         if (route == null) {
@@ -122,16 +107,23 @@ public final class SubscriptionManagerSwipeHandler {
             discardPending(root, version);
             return;
         }
+        RemovalPlan plan = attestSourceRemoval(route.recyclerView, route.item);
+        if (plan == null) {
+            discardPending(root, version);
+            return;
+        }
+        String videoId = plan.videoId;
         String accountNamespace = SubscriptionManager.currentPersistentAccountNamespaceForSwipe();
         if (accountNamespace == null) {
             discardPending(root, version);
             return;
         }
+        boolean alreadyHidden = SubscriptionManager.isVideoManuallyHiddenForSwipe(
+                videoId, accountNamespace);
 
         synchronized (LOCK) {
             RootOwnership ownership = ROOTS.get(root);
-            if (ownership == null || !ownership.matches(version)
-                    || !videoId.equals(ownership.videoId)) return;
+            if (ownership == null || !ownership.matches(version)) return;
             RecyclerTouchListener listener = RECYCLERS.get(route.recyclerView);
             if (listener == null) {
                 listener = new RecyclerTouchListener(route.recyclerView);
@@ -156,11 +148,24 @@ public final class SubscriptionManagerSwipeHandler {
                 discardPending(root, version);
                 return;
             }
+            PRESENTATIONS.put(route.item, new Presentation(route.item));
+            ownership.item = new WeakReference<>(route.item);
+            if (alreadyHidden) {
+                SubscriptionManagerState.SwipePersistence persistence =
+                        SubscriptionManager.persistManualHideForSwipe(
+                                videoId, accountNamespace);
+                if (persistence.status != SubscriptionManagerState.SWIPE_PERSIST_FAILED
+                        && executeSourceRemoval(plan)) {
+                    SubscriptionManager.commitManualHideForSwipe(
+                            videoId, accountNamespace, persistence.mutationToken);
+                    return;
+                }
+                // Keep a normal binding when reapplying a persisted hide fails. The visible row
+                // remains armed so a later swipe can retry the strictly attested source mutation.
+            }
             Binding binding = new Binding(root, route.item, route.recyclerView,
                     videoId, accountNamespace, version);
             ITEMS.put(route.item, binding);
-            ownership.item = new WeakReference<>(route.item);
-            ownership.videoId = null;
         }
     }
 
@@ -180,6 +185,216 @@ public final class SubscriptionManagerSwipeHandler {
         } catch (Throwable ignored) {
             return false;
         }
+    }
+
+    private static RemovalPlan attestSourceRemoval(RecyclerView recyclerView, View item) {
+        try {
+            if (recyclerView == null || item == null || !item.isAttachedToWindow()) return null;
+
+            Field adapterField = RecyclerView.class.getField("k");
+            if (Modifier.isStatic(adapterField.getModifiers())) return null;
+            Object adapter = adapterField.get(recyclerView);
+            if (!isExactNamed(adapter, "gnw")) return null;
+            Object owner = readAttestedField(adapter, "gnw", "a", "gnz");
+            Object adapterSource = readAttestedField(owner, "gnz", "d", "ansr");
+            Object presenter = readAttestedField(adapterSource, "ansr", "b", "anhc");
+            Object source = readAttestedField(presenter, "anhc", "f", null);
+            if (source == null
+                    || !isExactNamed(source, "anhg") && !isExactNamed(source, "ange")) return null;
+
+            Method holderMethod = RecyclerView.class.getMethod("m", View.class);
+            if (!Modifier.isStatic(holderMethod.getModifiers())
+                    || holderMethod.getReturnType() == Void.TYPE) return null;
+            Object holder = holderMethod.invoke(null, item);
+            Method positionMethod = holderPositionMethod(holder);
+            int globalPosition = (Integer) positionMethod.invoke(holder);
+
+            Method adapterCountMethod = exactInstanceMethod(adapter, "gnw", "a", Integer.TYPE);
+            Method sourceCountMethod = exactInstanceMethod(
+                    source, source.getClass().getName(), "a", Integer.TYPE);
+            Method sourceItemMethod = exactInstanceMethod(
+                    source, source.getClass().getName(), "c", Object.class, Integer.TYPE);
+            int adapterCount = (Integer) adapterCountMethod.invoke(adapter);
+            int sourceCount = (Integer) sourceCountMethod.invoke(source);
+
+            Object leaf;
+            int localPosition;
+            if (isExactNamed(source, "anhg")) {
+                leaf = source;
+                localPosition = globalPosition;
+            } else if (isExactNamed(source, "ange")) {
+                Method childRouteMethod = exactInstanceMethod(
+                        source, "ange", "l", namedClass(source, "angd"), Integer.TYPE);
+                Object childRoute = childRouteMethod.invoke(source, globalPosition);
+                if (!isExactNamed(childRoute, "angd")) return null;
+                leaf = readAttestedField(childRoute, "angd", "a", "anhg");
+                Method localPositionMethod = exactInstanceMethod(
+                        childRoute, "angd", "f", Integer.TYPE, Integer.TYPE);
+                localPosition = (Integer) localPositionMethod.invoke(childRoute, globalPosition);
+            } else {
+                return null;
+            }
+
+            Method leafCountMethod = exactInstanceMethod(leaf, "anhg", "a", Integer.TYPE);
+            Method leafItemMethod = exactInstanceMethod(
+                    leaf, "anhg", "c", Object.class, Integer.TYPE);
+            Method removeMethod = exactInstanceMethod(
+                    leaf, "anhg", "i", Void.TYPE, Integer.TYPE, Integer.TYPE);
+            int leafCount = (Integer) leafCountMethod.invoke(leaf);
+            if (!attestCounts(adapterCount, sourceCount, leafCount,
+                    globalPosition, localPosition)) return null;
+            Object sourceItem = sourceItemMethod.invoke(source, globalPosition);
+            Object leafItem = leafItemMethod.invoke(leaf, localPosition);
+            int confirmedPosition = (Integer) positionMethod.invoke(holder);
+            if (sourceItem == null || sourceItem != leafItem
+                    || confirmedPosition != globalPosition) return null;
+            String videoId = extractSourceItemVideoId(sourceItem);
+            if (videoId == null) return null;
+            return new RemovalPlan(recyclerView, item, adapter, owner, adapterSource, presenter,
+                    source, leaf, sourceItem, videoId, holder, positionMethod, adapterCountMethod,
+                    sourceCountMethod, sourceItemMethod, leafCountMethod, leafItemMethod,
+                    removeMethod, globalPosition, localPosition, adapterCount, sourceCount,
+                    leafCount);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static boolean executeSourceRemoval(RemovalPlan plan) {
+        if (plan == null) return false;
+        boolean mutationStarted = false;
+        try {
+            RecyclerView recyclerView = plan.recyclerView.get();
+            View item = plan.item.get();
+            if (recyclerView == null || item == null || !item.isAttachedToWindow()) return false;
+            Field adapterField = RecyclerView.class.getField("k");
+            if (Modifier.isStatic(adapterField.getModifiers())
+                    || adapterField.get(recyclerView) != plan.adapter) return false;
+            if (readAttestedField(plan.adapter, "gnw", "a", "gnz") != plan.owner
+                    || readAttestedField(plan.owner, "gnz", "d", "ansr") != plan.adapterSource
+                    || readAttestedField(plan.adapterSource, "ansr", "b", "anhc") != plan.presenter
+                    || readAttestedField(plan.presenter, "anhc", "f", null) != plan.source) {
+                return false;
+            }
+            Object currentHolder = RecyclerView.class.getMethod("m", View.class).invoke(null, item);
+            if (currentHolder != plan.holder
+                    || (Integer) plan.positionMethod.invoke(currentHolder) != plan.globalPosition) {
+                return false;
+            }
+            int adapterCount = (Integer) plan.adapterCountMethod.invoke(plan.adapter);
+            int sourceCount = (Integer) plan.sourceCountMethod.invoke(plan.source);
+            int leafCount = (Integer) plan.leafCountMethod.invoke(plan.leaf);
+            if (adapterCount != plan.adapterCount || sourceCount != plan.sourceCount
+                    || leafCount != plan.leafCount
+                    || !attestCounts(adapterCount, sourceCount, leafCount,
+                            plan.globalPosition, plan.localPosition)
+                    || plan.sourceItemMethod.invoke(plan.source, plan.globalPosition)
+                            != plan.sourceItem
+                    || plan.leafItemMethod.invoke(plan.leaf, plan.localPosition)
+                            != plan.sourceItem) return false;
+
+            mutationStarted = true;
+            plan.removeMethod.invoke(plan.leaf, plan.localPosition, 1);
+            return removalPostcondition(plan);
+        } catch (Throwable ignored) {
+            if (mutationStarted) {
+                try {
+                    if (removalPostcondition(plan)) return true;
+                } catch (Throwable ignoredPostcondition) {
+                }
+            }
+            return false;
+        }
+    }
+
+    private static boolean removalPostcondition(RemovalPlan plan) throws Exception {
+        int remainingAdapterCount = (Integer) plan.adapterCountMethod.invoke(plan.adapter);
+        int remainingSourceCount = (Integer) plan.sourceCountMethod.invoke(plan.source);
+        int remainingLeafCount = (Integer) plan.leafCountMethod.invoke(plan.leaf);
+        return removalPostconditionCounts(plan.adapterCount, plan.sourceCount, plan.leafCount,
+                remainingAdapterCount, remainingSourceCount, remainingLeafCount);
+    }
+
+    private static boolean hasRemovalPostcondition(RemovalPlan plan) {
+        try {
+            return plan != null && removalPostcondition(plan);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    static boolean removalPostconditionCounts(
+            int adapterCount, int sourceCount, int leafCount,
+            int remainingAdapterCount, int remainingSourceCount, int remainingLeafCount) {
+        return remainingAdapterCount == adapterCount - 1
+                && remainingSourceCount == sourceCount - 1
+                && remainingLeafCount == leafCount - 1;
+    }
+
+    static boolean removalAttemptSucceeded(
+            boolean executionSucceeded, boolean exactPlanPostconditionReached) {
+        return executionSucceeded || exactPlanPostconditionReached;
+    }
+
+    static boolean attestCounts(
+            int adapterCount, int sourceCount, int leafCount,
+            int globalPosition, int localPosition) {
+        return adapterCount >= 0 && sourceCount == adapterCount
+                && globalPosition >= 0 && globalPosition < sourceCount
+                && leafCount > 0 && leafCount <= sourceCount
+                && localPosition >= 0 && localPosition < leafCount;
+    }
+
+    private static Object readAttestedField(
+            Object owner, String ownerClass, String fieldName, String valueClass) throws Exception {
+        if (!isExactNamed(owner, ownerClass)) return null;
+        Field field = owner.getClass().getDeclaredField(fieldName);
+        if (Modifier.isStatic(field.getModifiers())) return null;
+        if (!field.isAccessible()) field.setAccessible(true);
+        Object value = field.get(owner);
+        return valueClass == null || isExactNamed(value, valueClass) ? value : null;
+    }
+
+    private static Method exactInstanceMethod(
+            Object owner, String ownerClass, String methodName, Class<?> returnType,
+            Class<?>... parameterTypes) throws Exception {
+        if (!isExactNamed(owner, ownerClass)) throw new NoSuchMethodException(methodName);
+        Method method = owner.getClass().getDeclaredMethod(methodName, parameterTypes);
+        if (Modifier.isStatic(method.getModifiers()) || method.getReturnType() != returnType) {
+            throw new NoSuchMethodException(methodName);
+        }
+        if (!method.isAccessible()) method.setAccessible(true);
+        return method;
+    }
+
+    static Method holderPositionMethod(Object holder) throws Exception {
+        Class<?> nvDeclaration = namedClassInHierarchy(holder, "nv");
+        if (nvDeclaration == null) throw new NoSuchMethodException("b");
+        Method method = nvDeclaration.getDeclaredMethod("b");
+        if (Modifier.isStatic(method.getModifiers()) || method.getReturnType() != Integer.TYPE) {
+            throw new NoSuchMethodException("b");
+        }
+        if (!method.isAccessible()) method.setAccessible(true);
+        return method;
+    }
+
+    private static Class<?> namedClassInHierarchy(Object value, String className) {
+        if (value == null) return null;
+        Class<?> type = value.getClass();
+        while (type != null && type != Object.class) {
+            if (className.equals(type.getName())) return type;
+            type = type.getSuperclass();
+        }
+        return null;
+    }
+
+    private static Class<?> namedClass(Object anchor, String className)
+            throws ClassNotFoundException {
+        return Class.forName(className, false, anchor.getClass().getClassLoader());
+    }
+
+    private static boolean isExactNamed(Object value, String className) {
+        return value != null && className.equals(value.getClass().getName());
     }
 
     private static boolean ensureDetachListener(View view) {
@@ -259,21 +474,83 @@ public final class SubscriptionManagerSwipeHandler {
         }
     }
 
-    private static void completeSwipe(final Binding binding) {
-        final View item;
+    private static boolean completeSwipe(final Binding binding) {
+        final View item = binding == null ? null : binding.item();
+        final RecyclerView recyclerView = binding == null ? null : binding.recyclerView();
+        final RemovalPlan plan = attestSourceRemoval(recyclerView, item);
+        if (plan == null || !plan.videoId.equals(binding.videoId)) return false;
+        final RemovalAttempt attempt = new RemovalAttempt(binding, plan);
         synchronized (LOCK) {
-            item = binding == null ? null : binding.item();
-            View root = binding == null ? null : binding.root();
+            View root = binding.root();
             RootOwnership ownership = root == null ? null : ROOTS.get(root);
             if (item == null || ITEMS.get(item) != binding
                     || !VERSIONS.isCurrent(binding.version)
                     || ownership == null || ownership.version != binding.version
                     || ownership.item() != item || !isSwipeContextEnabled()
-                    || !SubscriptionManager.manuallyHideVideoForSwipe(
-                            binding.videoId, binding.accountNamespace)) return;
+                    || item.getHandler() == null
+                    || Looper.myLooper() != item.getHandler().getLooper()) return false;
+            try {
+                if (!item.postDelayed(attempt, SWIPE_SETTLE_DURATION_MS)) return false;
+            } catch (Throwable ignored) {
+                return false;
+            }
+            SubscriptionManagerState.SwipePersistence persistence =
+                    SubscriptionManager.persistManualHideForSwipe(
+                            binding.videoId, binding.accountNamespace);
+            if (persistence.status == SubscriptionManagerState.SWIPE_PERSIST_FAILED) {
+                item.removeCallbacks(attempt);
+                return false;
+            }
+            attempt.mutationToken = persistence.mutationToken;
+            attempt.rollbackRequired =
+                    persistence.status == SubscriptionManagerState.SWIPE_PERSIST_ADDED;
+            attempt.persistenceReady = true;
         }
         try {
-            item.post(new HideRunnable(new WeakReference<>(item), binding.version));
+            item.animate().cancel();
+            item.animate()
+                    .translationX(-Math.max(item.getWidth(), 1))
+                    .alpha(0f)
+                    .setDuration(SWIPE_SETTLE_DURATION_MS)
+                    .start();
+            return true;
+        } catch (Throwable failure) {
+            item.removeCallbacks(attempt);
+            attempt.rollbackAndRestore();
+            return false;
+        }
+    }
+
+    private static void updateDrag(Binding binding, float offset) {
+        try {
+            View item = binding == null ? null : binding.item();
+            if (item == null || !isCurrent(binding)) return;
+            float translation = Math.min(0f, offset);
+            float width = Math.max(item.getWidth(), 1);
+            float progress = Math.min(1f, -translation / width);
+            item.animate().cancel();
+            item.setTranslationX(translation);
+            item.setAlpha(1f - progress * 0.4f);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void animateBack(Binding binding) {
+        try {
+            View item = binding == null ? null : binding.item();
+            if (item == null) return;
+            Presentation presentation;
+            synchronized (LOCK) {
+                presentation = PRESENTATIONS.get(item);
+            }
+            float translation = presentation == null ? 0f : presentation.previousTranslationX;
+            float alpha = presentation == null ? 1f : presentation.previousAlpha;
+            item.animate().cancel();
+            item.animate()
+                    .translationX(translation)
+                    .alpha(alpha)
+                    .setDuration(SWIPE_RETURN_DURATION_MS)
+                    .start();
         } catch (Throwable ignored) {
         }
     }
@@ -294,40 +571,34 @@ public final class SubscriptionManagerSwipeHandler {
     private static void restorePresentation(View item, Presentation presentation) {
         if (item == null || presentation == null) return;
         try {
+            ViewGroup.LayoutParams layoutParams = item.getLayoutParams();
+            if (layoutParams != null && presentation.hadLayoutParams) {
+                layoutParams.height = presentation.previousHeight;
+                if (layoutParams instanceof ViewGroup.MarginLayoutParams
+                        && presentation.hadMargins) {
+                    ViewGroup.MarginLayoutParams margins =
+                            (ViewGroup.MarginLayoutParams) layoutParams;
+                    margins.topMargin = presentation.previousTopMargin;
+                    margins.bottomMargin = presentation.previousBottomMargin;
+                }
+                item.setLayoutParams(layoutParams);
+            }
             item.setVisibility(presentation.previousVisibility);
+            item.setAlpha(presentation.previousAlpha);
+            item.setTranslationX(presentation.previousTranslationX);
             item.requestLayout();
+            ViewParent parent = item.getParent();
+            if (parent instanceof View) ((View) parent).requestLayout();
         } catch (Throwable ignored) {
         }
     }
 
-    static String extractVideoIdFromVerifiedRoute(Object component) {
+    static String extractSourceItemVideoId(Object sourceItem) {
         try {
-            // JADX synthesizes a defpackage source package; target DEX descriptors for gpq, glc,
-            // twb, tvp, anso, and amtj are root classes and must remain unqualified here.
-            Object model = readField(component, "e");
-            IdentityHashMap<Object, Boolean> seen = new IdentityHashMap<>();
-            for (int depth = 0; isNamed(model, "gpq"); depth++) {
-                if (depth >= MAX_MODEL_WRAPPERS
-                        || seen.put(model, Boolean.TRUE) != null) return null;
-                model = readFieldFromNamedClass(model, "gpq", "b");
-                if (model == null) return null;
-            }
-            if (!isNamed(model, "glc")) return null;
-            Object renderComponent = readFieldFromNamedClass(model, "glc", "a");
-            if (!isNamed(renderComponent, "twb")) return null;
-            Object callable = readFieldFromNamedClass(renderComponent, "twb", "b");
-            seen.clear();
-            for (int depth = 0; isNamed(callable, "tvp"); depth++) {
-                if (depth >= MAX_CALLABLE_WRAPPERS
-                        || seen.put(callable, Boolean.TRUE) != null) return null;
-                callable = readFieldFromNamedClass(callable, "tvp", "a");
-                if (callable == null) return null;
-            }
-            if (!isNamed(callable, "anso")) return null;
-            Object payload = readFieldFromNamedClass(callable, "anso", "d");
-            if (!isNamed(payload, "amtj")) return null;
-            Object bytes = readFieldFromNamedClass(payload, "amtj", "c");
-            return bytes instanceof byte[] ? extractEarliestFieldOneVideoId((byte[]) bytes) : null;
+            if (!isNamed(sourceItem, "amtj") || isNamed(sourceItem, "amvi")) return null;
+            Object payload = readFieldFromNamedClass(sourceItem, "amtj", "c");
+            return payload instanceof byte[]
+                    ? extractEarliestFieldOneVideoId((byte[]) payload) : null;
         } catch (Throwable ignored) {
             return null;
         }
@@ -337,10 +608,16 @@ public final class SubscriptionManagerSwipeHandler {
         if (bytes == null || bytes.length == 0 || bytes.length > MAX_PAYLOAD_BYTES) return null;
         for (int offset = 0; offset + 13 <= bytes.length; offset++) {
             if ((bytes[offset] & 0xff) != 0x0a || (bytes[offset + 1] & 0xff) != 11) continue;
+            boolean validVideoId = true;
             for (int index = offset + 2; index < offset + 13; index++) {
-                if (!isVideoIdCharacter(bytes[index] & 0xff)) return null;
+                if (!isVideoIdCharacter(bytes[index] & 0xff)) {
+                    validVideoId = false;
+                    break;
+                }
             }
-            return new String(bytes, offset + 2, 11, StandardCharsets.US_ASCII);
+            if (validVideoId) {
+                return new String(bytes, offset + 2, 11, StandardCharsets.US_ASCII);
+            }
         }
         return null;
     }
@@ -350,22 +627,6 @@ public final class SubscriptionManagerSwipeHandler {
                 || character >= 'a' && character <= 'z'
                 || character >= '0' && character <= '9'
                 || character == '_' || character == '-';
-    }
-
-    private static Object readField(Object owner, String name) throws Exception {
-        if (owner == null) return null;
-        Class<?> type = owner.getClass();
-        while (type != null && type != Object.class) {
-            try {
-                Field field = type.getDeclaredField(name);
-                if (Modifier.isStatic(field.getModifiers())) return null;
-                if (!field.isAccessible()) field.setAccessible(true);
-                return field.get(owner);
-            } catch (NoSuchFieldException ignored) {
-                type = type.getSuperclass();
-            }
-        }
-        return null;
     }
 
     private static Object readFieldFromNamedClass(Object owner, String className, String fieldName)
@@ -409,6 +670,7 @@ public final class SubscriptionManagerSwipeHandler {
         private final WeakReference<RecyclerView> recyclerView;
         private final GestureClassifier classifier;
         private Binding active;
+        private float downX;
         private Object proxy;
 
         RecyclerTouchListener(RecyclerView recyclerView) {
@@ -434,7 +696,10 @@ public final class SubscriptionManagerSwipeHandler {
             }
             if ("d".equals(name) && arguments != null && arguments.length == 1
                     && arguments[0] instanceof Boolean) {
-                if ((Boolean) arguments[0]) cancel();
+                if ((Boolean) arguments[0]) {
+                    animateBack(active);
+                    cancel();
+                }
                 return null;
             }
             if (method.getDeclaringClass() == Object.class) {
@@ -452,17 +717,25 @@ public final class SubscriptionManagerSwipeHandler {
                 if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
                     active = event.getPointerCount() == 1
                             ? findBindingAt(recyclerView, event.getX(), event.getY()) : null;
+                    downX = event.getX();
                     classifier.onDown(event.getX(), event.getY());
                 }
                 if (!isCurrent(active)) {
+                    animateBack(active);
                     cancel();
                     return false;
                 }
                 GestureClassifier.Result result = classifier.onEvent(event.getActionMasked(),
                         event.getPointerCount(), event.getX(), event.getY());
-                if (result == GestureClassifier.Result.CANCELLED) active = null;
+                if (result == GestureClassifier.Result.CONSUME) {
+                    updateDrag(active, event.getX() - downX);
+                } else if (result == GestureClassifier.Result.CANCELLED) {
+                    animateBack(active);
+                    active = null;
+                }
                 return result == GestureClassifier.Result.CONSUME;
             } catch (Throwable ignored) {
+                animateBack(active);
                 cancel();
                 return false;
             }
@@ -472,19 +745,28 @@ public final class SubscriptionManagerSwipeHandler {
             try {
                 RecyclerView recyclerView = this.recyclerView.get();
                 if (recyclerView == null) {
+                    animateBack(active);
                     cancel();
                     return;
                 }
                 if (!isCurrent(active)) {
+                    animateBack(active);
                     cancel();
                     return;
                 }
                 GestureClassifier.Result result = classifier.onEvent(event.getActionMasked(),
                         event.getPointerCount(), event.getX(), event.getY());
-                if (result == GestureClassifier.Result.COMPLETE) completeSwipe(active);
+                if (result == GestureClassifier.Result.CONSUME) {
+                    updateDrag(active, event.getX() - downX);
+                } else if (result == GestureClassifier.Result.COMPLETE) {
+                    if (!completeSwipe(active)) animateBack(active);
+                } else if (result == GestureClassifier.Result.CANCELLED) {
+                    animateBack(active);
+                }
                 if (result == GestureClassifier.Result.COMPLETE
                         || result == GestureClassifier.Result.CANCELLED) cancel();
             } catch (Throwable ignored) {
+                animateBack(active);
                 cancel();
             }
         }
@@ -575,33 +857,52 @@ public final class SubscriptionManagerSwipeHandler {
         }
     }
 
-    private static final class HideRunnable implements Runnable {
-        private final WeakReference<View> item;
-        private final SubscriptionManagerSwipeVersion.Token version;
+    private static final class RemovalAttempt implements Runnable {
+        private final Binding binding;
+        private final RemovalPlan plan;
+        volatile boolean persistenceReady;
+        volatile boolean rollbackRequired;
+        volatile long mutationToken;
 
-        HideRunnable(
-                WeakReference<View> item, SubscriptionManagerSwipeVersion.Token version) {
-            this.item = item;
-            this.version = version;
+        RemovalAttempt(Binding binding, RemovalPlan plan) {
+            this.binding = binding;
+            this.plan = plan;
         }
 
         @Override
         public void run() {
-            try {
-                View value = item.get();
-                if (value == null) return;
-                synchronized (LOCK) {
-                    Binding binding = ITEMS.get(value);
-                    if (binding == null || binding.version != version
-                            || !VERSIONS.isCurrent(version) || !value.isAttachedToWindow()) return;
-                    if (!PRESENTATIONS.containsKey(value)) {
-                        PRESENTATIONS.put(value, new Presentation(value.getVisibility()));
-                    }
-                    value.setVisibility(View.GONE);
-                    value.requestLayout();
-                }
-            } catch (Throwable ignored) {
+            boolean current;
+            synchronized (LOCK) {
+                View item = binding == null ? null : binding.item();
+                current = persistenceReady && item != null && ITEMS.get(item) == binding
+                        && VERSIONS.isCurrent(binding.version);
             }
+            boolean executionSucceeded = current && executeSourceRemoval(plan);
+            if (removalAttemptSucceeded(executionSucceeded, hasRemovalPostcondition(plan))) {
+                sourceRemovalCompleted();
+                return;
+            }
+            rollbackAndRestore();
+        }
+
+        private void sourceRemovalCompleted() {
+            rollbackRequired = false;
+            SubscriptionManager.commitManualHideForSwipe(
+                    binding.videoId, binding.accountNamespace, mutationToken);
+        }
+
+        void rollbackAndRestore() {
+            // Rebind or detach can synchronously remove the same attested item before this delayed
+            // attempt runs. Never undo its persisted hide after the exact plan already completed.
+            if (hasRemovalPostcondition(plan)) {
+                sourceRemovalCompleted();
+                return;
+            }
+            if (rollbackRequired && SubscriptionManager.rollbackManualHideForSwipe(
+                    binding.videoId, binding.accountNamespace, mutationToken)) {
+                rollbackRequired = false;
+            }
+            animateBack(binding);
         }
     }
 
@@ -629,6 +930,64 @@ public final class SubscriptionManagerSwipeHandler {
             }
             clearPreviousRootOwnership(value);
             detach(value);
+        }
+    }
+
+    private static final class RemovalPlan {
+        final WeakReference<RecyclerView> recyclerView;
+        final WeakReference<View> item;
+        final Object adapter;
+        final Object owner;
+        final Object adapterSource;
+        final Object presenter;
+        final Object source;
+        final Object leaf;
+        final Object sourceItem;
+        final String videoId;
+        final Object holder;
+        final Method positionMethod;
+        final Method adapterCountMethod;
+        final Method sourceCountMethod;
+        final Method sourceItemMethod;
+        final Method leafCountMethod;
+        final Method leafItemMethod;
+        final Method removeMethod;
+        final int globalPosition;
+        final int localPosition;
+        final int adapterCount;
+        final int sourceCount;
+        final int leafCount;
+
+        RemovalPlan(RecyclerView recyclerView, View item, Object adapter, Object owner,
+                Object adapterSource, Object presenter, Object source, Object leaf,
+                Object sourceItem, String videoId, Object holder, Method positionMethod,
+                Method adapterCountMethod, Method sourceCountMethod, Method sourceItemMethod,
+                Method leafCountMethod, Method leafItemMethod, Method removeMethod,
+                int globalPosition, int localPosition, int adapterCount, int sourceCount,
+                int leafCount) {
+            this.recyclerView = new WeakReference<>(recyclerView);
+            this.item = new WeakReference<>(item);
+            this.adapter = adapter;
+            this.owner = owner;
+            this.adapterSource = adapterSource;
+            this.presenter = presenter;
+            this.source = source;
+            this.leaf = leaf;
+            this.sourceItem = sourceItem;
+            this.videoId = videoId;
+            this.holder = holder;
+            this.positionMethod = positionMethod;
+            this.adapterCountMethod = adapterCountMethod;
+            this.sourceCountMethod = sourceCountMethod;
+            this.sourceItemMethod = sourceItemMethod;
+            this.leafCountMethod = leafCountMethod;
+            this.leafItemMethod = leafItemMethod;
+            this.removeMethod = removeMethod;
+            this.globalPosition = globalPosition;
+            this.localPosition = localPosition;
+            this.adapterCount = adapterCount;
+            this.sourceCount = sourceCount;
+            this.leafCount = leafCount;
         }
     }
 
@@ -665,7 +1024,6 @@ public final class SubscriptionManagerSwipeHandler {
     private static final class RootOwnership {
         final SubscriptionManagerSwipeVersion.Token version;
         WeakReference<View> item = new WeakReference<>(null);
-        String videoId;
         RootOwnership(SubscriptionManagerSwipeVersion.Token version) {
             this.version = version;
         }
@@ -681,9 +1039,31 @@ public final class SubscriptionManagerSwipeHandler {
 
     private static final class Presentation {
         final int previousVisibility;
+        final float previousAlpha;
+        final float previousTranslationX;
+        final boolean hadLayoutParams;
+        final int previousHeight;
+        final boolean hadMargins;
+        final int previousTopMargin;
+        final int previousBottomMargin;
 
-        Presentation(int previousVisibility) {
-            this.previousVisibility = previousVisibility;
+        Presentation(View item) {
+            previousVisibility = item.getVisibility();
+            previousAlpha = item.getAlpha();
+            previousTranslationX = item.getTranslationX();
+            ViewGroup.LayoutParams layoutParams = item.getLayoutParams();
+            hadLayoutParams = layoutParams != null;
+            previousHeight = layoutParams == null ? 0 : layoutParams.height;
+            hadMargins = layoutParams instanceof ViewGroup.MarginLayoutParams;
+            if (hadMargins) {
+                ViewGroup.MarginLayoutParams margins =
+                        (ViewGroup.MarginLayoutParams) layoutParams;
+                previousTopMargin = margins.topMargin;
+                previousBottomMargin = margins.bottomMargin;
+            } else {
+                previousTopMargin = 0;
+                previousBottomMargin = 0;
+            }
         }
     }
 

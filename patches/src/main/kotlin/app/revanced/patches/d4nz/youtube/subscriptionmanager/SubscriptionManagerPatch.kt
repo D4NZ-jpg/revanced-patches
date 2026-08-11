@@ -84,13 +84,19 @@ private fun addSubscriptionManagerResources() {
             "Experimental Subscriptions feed settings",
         "revanced_d4nz_subscription_manager_about_title" to "About subscription manager",
         "revanced_d4nz_subscription_manager_about_summary" to
-            """Automatically hides regular videos from your Subscriptions feed after you watch the selected percentage. Refresh the feed after watching a video. Shorts, live streams, and upcoming videos are not affected.
+            """Automatically hides supported regular videos from your Subscriptions feed after you watch the selected percentage. Refresh the feed after watching a video.
 
-Swipe-to-hide and channel hiding are not available yet.""",
+Experimental left swipe can hide supported Subscription entries locally. Channel hiding is not available.""",
         "revanced_d4nz_subscription_manager_title" to "Enable subscription manager",
         "revanced_d4nz_subscription_manager_summary_on" to
             "Enabled for the Subscriptions feed",
         "revanced_d4nz_subscription_manager_summary_off" to "Disabled",
+        "revanced_d4nz_subscription_manager_swipe_to_hide_title" to
+            "Experimental: Swipe to hide",
+        "revanced_d4nz_subscription_manager_swipe_to_hide_summary_on" to
+            "Left swipe hides supported Subscription entries locally",
+        "revanced_d4nz_subscription_manager_swipe_to_hide_summary_off" to
+            "Left swipe hiding is off",
         "revanced_d4nz_subscription_manager_hide_watched_title" to "Hide watched videos",
         "revanced_d4nz_subscription_manager_hide_watched_summary_on" to
             "Hide watched videos detected in the Subscriptions feed",
@@ -265,6 +271,29 @@ val subscriptionManagerPatch = bytecodePatch(
                 "->setAccountFromStartup(Ljava/lang/Object;)V",
         )
 
+        val resolvedIdentityMethod = resolvedAccountIdentityMethod
+        val resolvedIdentityReturns = resolvedIdentityMethod.instructions.indices.filter { index ->
+            resolvedIdentityMethod.instructions[index].opcode == Opcode.RETURN_OBJECT &&
+                (resolvedIdentityMethod.instructions[index] as? OneRegisterInstruction)
+                    ?.registerA?.isOrdinaryInvokeRegister() == true
+        }
+        if (resolvedIdentityReturns.size != 2) {
+            throw PatchException(
+                "Could not prove the resolved AccountIdentity returns " +
+                    "(found ${resolvedIdentityReturns.size} structural matches)",
+            )
+        }
+        resolvedIdentityReturns.asReversed().forEach { returnIndex ->
+            val returnRegister =
+                (resolvedIdentityMethod.instructions[returnIndex] as OneRegisterInstruction).registerA
+            resolvedIdentityMethod.addInstruction(
+                returnIndex,
+                "invoke-static {v$returnRegister}, " +
+                    "Lapp/revanced/extension/d4nz/youtube/subscriptionmanager/SubscriptionManagerAccountHook;" +
+                    "->hydrateAccountFromActiveIdentity(Ljava/lang/Object;)V",
+            )
+        }
+
         addSubscriptionManagerResources()
 
         addLithoFilter(
@@ -309,6 +338,7 @@ val subscriptionManagerPatch = bytecodePatch(
                 preferences = setOf(
                     NonInteractivePreference("revanced_d4nz_subscription_manager_about"),
                     SwitchPreference("revanced_d4nz_subscription_manager"),
+                    SwitchPreference("revanced_d4nz_subscription_manager_swipe_to_hide"),
                     SwitchPreference("revanced_d4nz_subscription_manager_hide_watched"),
                     TextPreference(
                         "revanced_d4nz_subscription_manager_watched_threshold",

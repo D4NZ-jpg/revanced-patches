@@ -141,6 +141,38 @@ public final class SubscriptionManagerAccountHookTest {
     }
 
     @Test
+    public void activeIdentityHydrationQueuesRestoredAccount() {
+        SubscriptionManagerAccountHook.hydrateAccountFromActiveIdentity(
+                identity("restored-id", false));
+
+        assertPendingAccount("restored-id");
+
+        SubscriptionManagerAccountHook.hydrateAccountFromActiveIdentity(
+                identity("restored-id", false));
+        assertPendingAccount("restored-id");
+    }
+
+    @Test
+    public void activeIdentityHydrationCannotOverrideStartedTransition() {
+        long generation = SubscriptionManagerAccountHook.beginTransition();
+
+        SubscriptionManagerAccountHook.hydrateAccountFromActiveIdentity(
+                identity("stale-id", false));
+
+        SubscriptionManagerState state = new SubscriptionManagerState(
+                new SubscriptionManagerStateTest.InMemoryStore());
+        SubscriptionManagerAccountHook.applyPendingAccount(state);
+        assertEquals(SubscriptionManagerAccount.UNRESOLVED_NAMESPACE,
+                state.getAccount().getNamespace());
+
+        assertTrue(SubscriptionManagerAccountHook.finishTransition(
+                generation, identity("transition-id", false)));
+        SubscriptionManagerAccountHook.applyPendingAccount(state);
+        assertEquals(SubscriptionManagerAccount.fromIdentifier("transition-id"),
+                state.getAccount());
+    }
+
+    @Test
     public void pendingAccountSurvivesTransientStoreFailure() {
         AtomicBoolean failNextRead = new AtomicBoolean(true);
         SubscriptionManagerPreferences.Store store = new SubscriptionManagerPreferences.Store() {
