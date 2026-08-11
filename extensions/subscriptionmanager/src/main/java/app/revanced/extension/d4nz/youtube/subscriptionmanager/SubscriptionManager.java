@@ -59,8 +59,9 @@ public final class SubscriptionManager {
             return;
         }
         try {
+            SubscriptionManagerSwipeHandler.invalidateAllOwnership();
             current.setAccountIdentifier(accountIdentifier);
-        } catch (RuntimeException ignored) {
+        } catch (Throwable ignored) {
             disable();
         }
     }
@@ -73,9 +74,34 @@ public final class SubscriptionManager {
             return;
         }
         try {
+            SubscriptionManagerSwipeHandler.invalidateAllOwnership();
             current.setIncognito(incognito);
-        } catch (RuntimeException ignored) {
+        } catch (Throwable ignored) {
             disable();
+        }
+    }
+
+    /** Returns the transient namespace token captured when a swipe binding is published. */
+    static String currentPersistentAccountNamespaceForSwipe() {
+        initialize();
+        SubscriptionManagerState current = state;
+        if (current == null) return null;
+        try {
+            return current.currentPersistentAccountNamespace();
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** Fail-open persistence facade used only after a confirmed swipe. */
+    static boolean manuallyHideVideoForSwipe(String videoId, String expectedAccountNamespace) {
+        initialize();
+        SubscriptionManagerState current = state;
+        if (current == null) return false;
+        try {
+            return current.manuallyHideVideoPersistently(videoId, expectedAccountNamespace);
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
@@ -173,8 +199,6 @@ public final class SubscriptionManager {
         for (int index = 0; index < identityCount; index++) {
             CandidateIdentity identity = identities.get(index);
             message.append("; identity[kind=").append(identity.kind())
-                    .append(", fingerprint=")
-                    .append(SubscriptionManagerHash.shortFingerprint(identity.value()))
                     .append(", path=").append(identity.path())
                     .append(", offset=").append(identity.valueOffset()).append(']');
         }

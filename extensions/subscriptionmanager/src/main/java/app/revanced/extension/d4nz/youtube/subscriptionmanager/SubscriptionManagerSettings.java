@@ -7,6 +7,9 @@ import app.revanced.extension.shared.settings.IntegerSetting;
 public final class SubscriptionManagerSettings {
     public static final BooleanSetting SUBSCRIPTION_MANAGER =
             new BooleanSetting("revanced_d4nz_subscription_manager", false);
+    /** Runtime rollout gate; intentionally absent from the visible settings screen. */
+    public static final BooleanSetting SUBSCRIPTION_MANAGER_SWIPE_TO_HIDE =
+            new BooleanSetting("revanced_d4nz_subscription_manager_swipe_to_hide", false);
     public static final BooleanSetting SUBSCRIPTION_MANAGER_HIDE_WATCHED =
             new BooleanSetting("revanced_d4nz_subscription_manager_hide_watched", false);
     public static final IntegerSetting SUBSCRIPTION_MANAGER_WATCHED_THRESHOLD =

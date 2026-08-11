@@ -7,7 +7,7 @@ import org.junit.Test;
 
 public final class SubscriptionManagerTest {
     @Test
-    public void diagnosticFormattingFingerprintsIdentitiesWithoutRawLeakage() {
+    public void diagnosticFormattingOmitsIdentityTokensAndRawValues() {
         String videoId = "Abc_def-123";
         String channelId = "UCabcdefghijklmnopqrstuv";
         String handle = "@private.handle";
@@ -24,12 +24,10 @@ public final class SubscriptionManagerTest {
         assertFalse(diagnostic.contains(videoId));
         assertFalse(diagnostic.contains(channelId));
         assertFalse(diagnostic.contains(handle));
-        assertTrue(diagnostic.contains(
-                "fingerprint=" + SubscriptionManagerHash.shortFingerprint(videoId)));
-        assertTrue(diagnostic.contains(
-                "fingerprint=" + SubscriptionManagerHash.shortFingerprint(channelId)));
-        assertTrue(diagnostic.contains(
-                "fingerprint=" + SubscriptionManagerHash.shortFingerprint(handle)));
+        assertFalse(diagnostic.contains("fingerprint="));
+        assertFalse(diagnostic.contains(SubscriptionManagerHash.shortFingerprint(videoId)));
+        assertFalse(diagnostic.contains(SubscriptionManagerHash.shortFingerprint(channelId)));
+        assertFalse(diagnostic.contains(SubscriptionManagerHash.shortFingerprint(handle)));
         assertTrue(diagnostic.length() <= 4096);
     }
 

@@ -15,6 +15,7 @@ public final class SubscriptionManagerAccountHook {
 
     /** Applies a committed account transition without reading an account name or email address. */
     public static void setAccount(AccountIdentity identity) {
+        SubscriptionManagerSwipeHandler.invalidateAllOwnership();
         long generation = beginTransition();
         applyLatestAccount(generation);
         if (finishTransition(generation, identity)) {
@@ -24,6 +25,7 @@ public final class SubscriptionManagerAccountHook {
 
     /** Applies startup hydration only if no newer account transition has started. */
     public static void setAccountFromStartup(Object identity) {
+        SubscriptionManagerSwipeHandler.invalidateAllOwnership();
         if (rememberStartup(identity)) {
             applyLatestAccount(0);
         }

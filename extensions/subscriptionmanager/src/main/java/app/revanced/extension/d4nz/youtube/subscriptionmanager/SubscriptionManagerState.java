@@ -12,6 +12,11 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class SubscriptionManagerState {
     public static final int MAX_ID_LENGTH = 64;
     public static final int MAX_IDS_PER_COLLECTION = 1000;
+    static final int STORED_KEY_LENGTH = 64;
+
+    private static final String VIDEO_DOMAIN = "video";
+    private static final String CHANNEL_ID_DOMAIN = "channel-id";
+    private static final String CHANNEL_HANDLE_DOMAIN = "channel-handle";
 
     private final SubscriptionManagerPreferences.Store store;
     private final AtomicReference<Snapshot> snapshot;
@@ -70,59 +75,84 @@ public final class SubscriptionManagerState {
         if (!isValidId(videoId)) {
             return false;
         }
-        return snapshot.get().shouldHideVideo(videoId.trim(), hideWatchedVideos);
+        return snapshot.get().shouldHideVideo(identityKey(VIDEO_DOMAIN, videoId), hideWatchedVideos);
     }
 
     public boolean shouldHideChannel(String channelId, String channelHandle) {
         Snapshot current = snapshot.get();
-        boolean hiddenById = isValidId(channelId) && current.hiddenChannelIds.contains(channelId.trim());
-        boolean hiddenByHandle = isValidId(channelHandle) && current.hiddenChannelHandles.contains(channelHandle.trim());
+        boolean hiddenById = isValidId(channelId)
+                && current.hiddenChannelIds.contains(identityKey(CHANNEL_ID_DOMAIN, channelId));
+        boolean hiddenByHandle = isValidId(channelHandle)
+                && current.hiddenChannelHandles.contains(identityKey(CHANNEL_HANDLE_DOMAIN, channelHandle));
         return hiddenById || hiddenByHandle;
     }
 
     public synchronized boolean manuallyHideVideo(String videoId) {
-        String id = requireValidId(videoId);
-        return updateSnapshot(snapshot.get().withAddedManualHiddenVideo(id));
+        return updateSnapshot(snapshot.get().withAddedManualHiddenVideo(
+                identityKey(VIDEO_DOMAIN, requireValidId(videoId))));
+    }
+
+    /**
+     * Used by swipe: success means the binding still belongs to the current resolved account and
+     * the hide is persisted. The namespace check and write share this synchronized boundary with
+     * account changes, preventing a stale binding from writing into a newly selected account.
+     */
+    synchronized boolean manuallyHideVideoPersistently(
+            String videoId, String expectedAccountNamespace) {
+        if (!account.isPersistent()
+                || !account.getNamespace().equals(expectedAccountNamespace)) return false;
+        String key = identityKey(VIDEO_DOMAIN, requireValidId(videoId));
+        Snapshot current = snapshot.get();
+        if (current.manuallyHiddenVideoIds.contains(key)) return true;
+        if (current.manuallyHiddenVideoIds.size() >= MAX_IDS_PER_COLLECTION) return false;
+        Snapshot next = current.withAddedManualHiddenVideo(key);
+        store.putString(account.stateKey(), SubscriptionManagerStateCodec.serialize(next));
+        snapshot.set(next);
+        return true;
+    }
+
+    synchronized String currentPersistentAccountNamespace() {
+        return account.isPersistent() ? account.getNamespace() : null;
     }
 
     public synchronized boolean restoreManuallyHiddenVideo(String videoId) {
-        String id = requireValidId(videoId);
-        return updateSnapshot(snapshot.get().withRemovedManualHiddenVideo(id));
+        return updateSnapshot(snapshot.get().withRemovedManualHiddenVideo(
+                identityKey(VIDEO_DOMAIN, requireValidId(videoId))));
     }
 
     public synchronized boolean markVideoHiddenAsWatched(String videoId) {
-        String id = requireValidId(videoId);
-        return updateSnapshot(snapshot.get().withAddedWatchedHiddenVideo(id));
+        return updateSnapshot(snapshot.get().withAddedWatchedHiddenVideo(
+                identityKey(VIDEO_DOMAIN, requireValidId(videoId))));
     }
 
     public synchronized boolean restoreWatchedVideo(String videoId) {
-        String id = requireValidId(videoId);
-        return updateSnapshot(snapshot.get().withAddedShowOverride(id));
+        return updateSnapshot(snapshot.get().withAddedShowOverride(
+                identityKey(VIDEO_DOMAIN, requireValidId(videoId))));
     }
 
     public synchronized boolean clearVideoShowOverride(String videoId) {
-        String id = requireValidId(videoId);
-        return updateSnapshot(snapshot.get().withRemovedShowOverride(id));
+        return updateSnapshot(snapshot.get().withRemovedShowOverride(
+                identityKey(VIDEO_DOMAIN, requireValidId(videoId))));
     }
 
     public synchronized boolean hideChannelId(String channelId) {
-        String id = requireValidId(channelId);
-        return updateSnapshot(snapshot.get().withAddedHiddenChannelId(id));
+        return updateSnapshot(snapshot.get().withAddedHiddenChannelId(
+                identityKey(CHANNEL_ID_DOMAIN, requireValidId(channelId))));
     }
 
     public synchronized boolean restoreChannelId(String channelId) {
-        String id = requireValidId(channelId);
-        return updateSnapshot(snapshot.get().withRemovedHiddenChannelId(id));
+        return updateSnapshot(snapshot.get().withRemovedHiddenChannelId(
+                identityKey(CHANNEL_ID_DOMAIN, requireValidId(channelId))));
     }
 
     public synchronized boolean hideChannelHandle(String channelHandle) {
-        String id = requireValidId(channelHandle);
-        return updateSnapshot(snapshot.get().withAddedHiddenChannelHandle(id));
+        return updateSnapshot(snapshot.get().withAddedHiddenChannelHandle(
+                identityKey(CHANNEL_HANDLE_DOMAIN, requireValidId(channelHandle))));
     }
 
     public synchronized boolean restoreChannelHandle(String channelHandle) {
-        String id = requireValidId(channelHandle);
-        return updateSnapshot(snapshot.get().withRemovedHiddenChannelHandle(id));
+        return updateSnapshot(snapshot.get().withRemovedHiddenChannelHandle(
+                identityKey(CHANNEL_HANDLE_DOMAIN, requireValidId(channelHandle))));
     }
 
     synchronized void setAccount(SubscriptionManagerAccount nextAccount) {
@@ -135,23 +165,31 @@ public final class SubscriptionManagerState {
     }
 
     private Snapshot loadSnapshot(SubscriptionManagerAccount account) {
-        if (!account.isPersistent()) {
-            return Snapshot.empty();
+        if (!account.isPersistent()) return Snapshot.empty();
+        String serialized = store.getString(account.stateKey());
+        if (serialized == null || serialized.isEmpty()) return Snapshot.empty();
+        SubscriptionManagerStateCodec.DecodeResult decoded =
+                SubscriptionManagerStateCodec.decode(serialized);
+        if (!decoded.currentFormat) {
+            // Decode errors fail open, while store failures propagate so account application retries.
+            store.putString(account.stateKey(),
+                    SubscriptionManagerStateCodec.serialize(Snapshot.empty()));
         }
-        return SubscriptionManagerStateCodec.deserialize(store.getString(account.stateKey()));
+        return decoded.snapshot;
     }
 
     private boolean updateSnapshot(Snapshot nextSnapshot) {
         Snapshot previousSnapshot = snapshot.get();
-        if (previousSnapshot.equals(nextSnapshot)) {
-            return false;
-        }
-
-        snapshot.set(nextSnapshot);
+        if (previousSnapshot.equals(nextSnapshot)) return false;
         if (account.isPersistent()) {
             store.putString(account.stateKey(), SubscriptionManagerStateCodec.serialize(nextSnapshot));
         }
+        snapshot.set(nextSnapshot);
         return true;
+    }
+
+    private String identityKey(String domain, String rawIdentity) {
+        return SubscriptionManagerHash.identityKey(account.getNamespace(), domain, rawIdentity.trim());
     }
 
     static boolean isValidId(String id) {
@@ -170,6 +208,16 @@ public final class SubscriptionManagerState {
         return true;
     }
 
+    static boolean isValidStoredKey(String key) {
+        if (key == null || key.length() != STORED_KEY_LENGTH) return false;
+        for (int i = 0; i < key.length(); i++) {
+            char character = key.charAt(i);
+            if (!((character >= '0' && character <= '9')
+                    || (character >= 'a' && character <= 'f'))) return false;
+        }
+        return true;
+    }
+
     static String requireValidId(String id) {
         if (!isValidId(id)) {
             throw new IllegalArgumentException("invalid subscription manager id");
@@ -184,10 +232,8 @@ public final class SubscriptionManagerState {
 
         LinkedHashSet<String> normalizedIds = new LinkedHashSet<>();
         for (String id : ids) {
-            if (!isValidId(id)) {
-                continue;
-            }
-            normalizedIds.add(id.trim());
+            if (!isValidStoredKey(id)) continue;
+            normalizedIds.add(id);
             if (normalizedIds.size() >= MAX_IDS_PER_COLLECTION) {
                 break;
             }

@@ -9,69 +9,74 @@ import org.junit.Test;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 
 public final class SubscriptionManagerStateCodecTest {
+    private static String key(String domain, String raw) {
+        return SubscriptionManagerHash.identityKey("account-test", domain, raw);
+    }
+
     @Test
-    public void roundTripPreservesAllPersistentSets() {
+    public void roundTripPreservesAllPersistentKeySets() {
         SubscriptionManagerState.Snapshot snapshot = SubscriptionManagerState.Snapshot.create(
-                Arrays.asList("manual-b", "manual-a"),
-                Arrays.asList("watched-a"),
-                Arrays.asList("show-a"),
-                Arrays.asList("channel-id-a"),
-                Arrays.asList("@handle-a")
-        );
+                Arrays.asList(key("video", "manual-b"), key("video", "manual-a")),
+                Arrays.asList(key("video", "watched-a")),
+                Arrays.asList(key("video", "show-a")),
+                Arrays.asList(key("channel-id", "channel-id-a")),
+                Arrays.asList(key("channel-handle", "@handle-a")));
 
         String serialized = SubscriptionManagerStateCodec.serialize(snapshot);
-        SubscriptionManagerState.Snapshot restored = SubscriptionManagerStateCodec.deserialize(serialized);
-
-        assertEquals(snapshot, restored);
-        assertTrue(restored.getManuallyHiddenVideoIds().contains("manual-a"));
-        assertTrue(restored.getWatchedHiddenVideoIds().contains("watched-a"));
-        assertTrue(restored.getVideoShowOverrideIds().contains("show-a"));
-        assertTrue(restored.getHiddenChannelIds().contains("channel-id-a"));
-        assertTrue(restored.getHiddenChannelHandles().contains("@handle-a"));
+        assertEquals(snapshot, SubscriptionManagerStateCodec.deserialize(serialized));
     }
 
     @Test
     public void serializationIsDeterministicAndVersioned() {
+        String a = key("video", "a");
+        String b = key("video", "b");
+        String c = key("video", "c");
         SubscriptionManagerState.Snapshot first = SubscriptionManagerState.Snapshot.create(
-                Arrays.asList("c", "a", "b"),
-                Arrays.asList("w2", "w1"),
-                Arrays.asList("o"),
-                Arrays.asList("ch"),
-                Arrays.asList("@h")
-        );
+                Arrays.asList(c, a, b), null, null, null, null);
         SubscriptionManagerState.Snapshot second = SubscriptionManagerState.Snapshot.create(
-                Arrays.asList("b", "c", "a"),
-                Arrays.asList("w1", "w2"),
-                Arrays.asList("o"),
-                Arrays.asList("ch"),
-                Arrays.asList("@h")
-        );
+                Arrays.asList(b, c, a), null, null, null, null);
 
-        String firstSerialized = SubscriptionManagerStateCodec.serialize(first);
-        String secondSerialized = SubscriptionManagerStateCodec.serialize(second);
+        assertEquals(SubscriptionManagerStateCodec.serialize(first),
+                SubscriptionManagerStateCodec.serialize(second));
+        assertTrue(SubscriptionManagerStateCodec.serialize(first).startsWith("version=2\n"));
+    }
 
-        assertEquals(firstSerialized, secondSerialized);
-        assertTrue(firstSerialized.startsWith("version=1\n"));
+    @Test
+    public void serializedStateContainsNeitherRawIdentitiesNorTheirBase64Forms() {
+        String video = "Abc_def-123";
+        String channel = "UCabcdefghijklmnopqrstuv";
+        String handle = "@private.handle";
+        SubscriptionManagerState state = new SubscriptionManagerState(
+                new SubscriptionManagerStateTest.InMemoryStore(),
+                SubscriptionManagerAccount.fromIdentifier("account"));
+        state.manuallyHideVideo(video);
+        state.hideChannelId(channel);
+        state.hideChannelHandle(handle);
+        String serialized = SubscriptionManagerStateCodec.serialize(state.snapshot());
+
+        for (String raw : Arrays.asList(video, channel, handle)) {
+            assertFalse(serialized.contains(raw));
+            assertFalse(serialized.contains(Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(raw.getBytes(StandardCharsets.UTF_8))));
+        }
     }
 
     @Test
     public void aggregateSerializationAndDeserializationAreBounded() {
-        List<String> largeIds = new ArrayList<>();
+        List<String> keys = new ArrayList<>();
         for (int index = 0; index < SubscriptionManagerState.MAX_IDS_PER_COLLECTION; index++) {
-            largeIds.add("id-" + index + '-' + repeat("\u754c", 54));
+            keys.add(key("video", "id-" + index));
         }
-        SubscriptionManagerState.Snapshot largeSnapshot = SubscriptionManagerState.Snapshot.create(
-                largeIds, largeIds, largeIds, largeIds, largeIds);
-
-        String serialized = SubscriptionManagerStateCodec.serialize(largeSnapshot);
-
+        SubscriptionManagerState.Snapshot large = SubscriptionManagerState.Snapshot.create(
+                keys, keys, keys, keys, keys);
+        String serialized = SubscriptionManagerStateCodec.serialize(large);
         assertTrue(serialized.getBytes(StandardCharsets.UTF_8).length
                 <= SubscriptionManagerStateCodec.MAX_SERIALIZED_BYTES);
-        assertEquals(SubscriptionManagerState.Snapshot.empty(),
-                SubscriptionManagerStateCodec.deserialize(serialized));
+        assertEquals(large, SubscriptionManagerStateCodec.deserialize(serialized));
 
         String oversized = repeat("x", SubscriptionManagerStateCodec.MAX_SERIALIZED_BYTES + 1);
         assertEquals(SubscriptionManagerState.Snapshot.empty(),
@@ -79,36 +84,14 @@ public final class SubscriptionManagerStateCodecTest {
     }
 
     @Test
-    public void overCountCollectionFailsOpenInsteadOfPartiallyLoading() {
-        StringBuilder manualVideos = new StringBuilder();
-        for (int index = 0; index <= SubscriptionManagerState.MAX_IDS_PER_COLLECTION; index++) {
-            if (index > 0) manualVideos.append(',');
-            manualVideos.append("YQ");
-        }
-        String serialized = "version=1\nmanualVideos=" + manualVideos
-                + "\nwatchedVideos=\nshowOverrides=\nchannelIds=\nchannelHandles=\n";
-
-        assertEquals(SubscriptionManagerState.Snapshot.empty(),
-                SubscriptionManagerStateCodec.deserialize(serialized));
-    }
-
-    @Test
-    public void malformedDataFailsOpenToEmptySnapshot() {
-        assertEquals(
-                SubscriptionManagerState.Snapshot.empty(),
-                SubscriptionManagerStateCodec.deserialize("version=2\nmanualVideos=bad")
-        );
-        assertEquals(
-                SubscriptionManagerState.Snapshot.empty(),
-                SubscriptionManagerStateCodec.deserialize("version=1\nmanualVideos=%%%\n")
-        );
-        assertEquals(
-                SubscriptionManagerState.Snapshot.empty(),
-                SubscriptionManagerStateCodec.deserialize(
-                        "version=1\nmanualVideos=_w\nwatchedVideos=\n"
-                                + "showOverrides=\nchannelIds=\nchannelHandles=\n")
-        );
-        assertFalse(SubscriptionManagerStateCodec.deserialize(null).shouldHideVideo("video-a"));
+    public void legacyRawAndMalformedFormatsAreRejected() {
+        String legacy = "version=1\nmanualVideos=QWJjX2RlZi0xMjM\nwatchedVideos=\n"
+                + "showOverrides=\nchannelIds=\nchannelHandles=\n";
+        assertFalse(SubscriptionManagerStateCodec.decode(legacy).currentFormat);
+        assertFalse(SubscriptionManagerStateCodec.decode(
+                "version=2\nmanualVideos=raw-video\nwatchedVideos=\nshowOverrides=\n"
+                        + "channelIds=\nchannelHandles=\n").currentFormat);
+        assertFalse(SubscriptionManagerStateCodec.decode("not-state").currentFormat);
     }
 
     private static String repeat(String value, int count) {

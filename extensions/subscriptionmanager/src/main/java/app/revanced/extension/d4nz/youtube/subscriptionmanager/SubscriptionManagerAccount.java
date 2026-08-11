@@ -106,6 +106,14 @@ final class SubscriptionManagerHash {
         }
     }
 
+    static String identityKey(String accountNamespace, String domain, String rawIdentity) {
+        if (accountNamespace == null || domain == null || rawIdentity == null) {
+            throw new IllegalArgumentException("identity key inputs must not be null");
+        }
+        return sha256Hex("d4nz-subscription-manager-state-v2\u0000"
+                + accountNamespace + '\u0000' + domain + '\u0000' + rawIdentity);
+    }
+
     static String shortFingerprint(String value) {
         return sha256Hex(value).substring(0, SHORT_FINGERPRINT_LENGTH);
     }

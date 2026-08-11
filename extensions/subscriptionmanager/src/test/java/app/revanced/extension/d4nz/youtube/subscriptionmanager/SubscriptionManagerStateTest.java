@@ -25,19 +25,25 @@ public final class SubscriptionManagerStateTest {
         state.setAccountIdentifier("first@example.com");
         String firstKey = state.getAccount().stateKey();
         state.manuallyHideVideo("video-a");
+        String firstStoredKey = state.snapshot().getManuallyHiddenVideoIds().iterator().next();
 
         state.setAccountIdentifier("second@example.com");
         String secondKey = state.getAccount().stateKey();
         assertFalse(state.shouldHideVideo("video-a"));
+        state.manuallyHideVideo("video-a");
+        String secondStoredKey = state.snapshot().getManuallyHiddenVideoIds().iterator().next();
         state.manuallyHideVideo("video-b");
 
         assertFalse(firstKey.contains("first@example.com"));
         assertFalse(secondKey.contains("second@example.com"));
         assertFalse(firstKey.equals(secondKey));
 
+        assertFalse(firstStoredKey.equals(secondStoredKey));
         state.setAccountIdentifier("first@example.com");
         assertTrue(state.shouldHideVideo("video-a"));
         assertFalse(state.shouldHideVideo("video-b"));
+        String reloadedFirstStoredKey = state.snapshot().getManuallyHiddenVideoIds().iterator().next();
+        assertEquals(firstStoredKey, reloadedFirstStoredKey);
     }
 
     @Test
@@ -51,7 +57,8 @@ public final class SubscriptionManagerStateTest {
         state.restoreWatchedVideo("watched-one");
         assertFalse(state.shouldHideVideo("watched-one"));
         assertTrue(state.shouldHideVideo("watched-two"));
-        assertTrue(state.snapshot().getVideoShowOverrideIds().contains("watched-one"));
+        assertEquals(1, state.snapshot().getVideoShowOverrideIds().size());
+        assertFalse(state.snapshot().getVideoShowOverrideIds().contains("watched-one"));
 
         // Playback updates must not clear a per-video show override.
         state.markVideoHiddenAsWatched("watched-one");
@@ -103,6 +110,22 @@ public final class SubscriptionManagerStateTest {
     }
 
     @Test
+    public void legacyRawStateIsRewrittenToEmptyCurrentFormatOnLoad() {
+        InMemoryStore store = new InMemoryStore();
+        SubscriptionManagerAccount account = SubscriptionManagerAccount.fromIdentifier("legacy-account");
+        String legacyRawBase64 = "QWJjX2RlZi0xMjM";
+        store.putString(account.stateKey(), "version=1\nmanualVideos=" + legacyRawBase64
+                + "\nwatchedVideos=\nshowOverrides=\nchannelIds=\nchannelHandles=\n");
+
+        SubscriptionManagerState state = new SubscriptionManagerState(store, account);
+
+        assertFalse(state.shouldHideVideo("Abc_def-123"));
+        assertEquals(SubscriptionManagerStateCodec.serialize(SubscriptionManagerState.Snapshot.empty()),
+                store.getString(account.stateKey()));
+        assertFalse(store.getString(account.stateKey()).contains(legacyRawBase64));
+    }
+
+    @Test
     public void malformedStateFailsOpenAndCanBeReplaced() {
         InMemoryStore store = new InMemoryStore();
         String key = SubscriptionManagerAccount.fromIdentifier("account").stateKey();
@@ -111,11 +134,124 @@ public final class SubscriptionManagerStateTest {
         SubscriptionManagerState state = new SubscriptionManagerState(store);
         state.setAccountIdentifier("account");
         assertFalse(state.shouldHideVideo("video-a"));
+        assertTrue(store.getString(key).startsWith("version=2\n"));
+        assertFalse(store.getString(key).contains("not-a-valid-state"));
 
         state.manuallyHideVideo("video-a");
         SubscriptionManagerState reloaded = new SubscriptionManagerState(store);
         reloaded.setAccountIdentifier("account");
         assertTrue(reloaded.shouldHideVideo("video-a"));
+    }
+
+    @Test
+    public void persistentSwipeHideRequiresResolvedAccountAndSuccessfulWrite() {
+        InMemoryStore unresolvedStore = new InMemoryStore();
+        SubscriptionManagerState unresolved = new SubscriptionManagerState(unresolvedStore);
+        assertFalse(unresolved.manuallyHideVideoPersistently("Abc_def-123", null));
+        assertFalse(unresolved.shouldHideVideo("Abc_def-123"));
+
+        SubscriptionManagerPreferences.Store failingStore = new SubscriptionManagerPreferences.Store() {
+            @Override public String getString(String key) { return null; }
+            @Override public void putString(String key, String value) { throw new RuntimeException("disk"); }
+            @Override public void remove(String key) { }
+        };
+        SubscriptionManagerAccount account = SubscriptionManagerAccount.fromIdentifier("account");
+        SubscriptionManagerState resolved = new SubscriptionManagerState(failingStore, account);
+        try {
+            resolved.manuallyHideVideoPersistently("Abc_def-123", account.getNamespace());
+            throw new AssertionError("Expected failed persistence");
+        } catch (RuntimeException expected) {
+            assertFalse(resolved.shouldHideVideo("Abc_def-123"));
+        }
+    }
+
+    @Test
+    public void persistentSwipeRejectsStaleAccountNamespace() {
+        InMemoryStore store = new InMemoryStore();
+        SubscriptionManagerAccount first = SubscriptionManagerAccount.fromIdentifier("first");
+        SubscriptionManagerAccount second = SubscriptionManagerAccount.fromIdentifier("second");
+        SubscriptionManagerState state = new SubscriptionManagerState(store, first);
+
+        state.setAccount(second);
+
+        assertFalse(state.manuallyHideVideoPersistently("Abc_def-123", first.getNamespace()));
+        assertFalse(state.shouldHideVideo("Abc_def-123"));
+        assertFalse(store.values.containsKey(second.stateKey()));
+    }
+
+    @Test
+    public void accountSwitchCannotRedirectInFlightSwipeWrite() throws Exception {
+        final InMemoryStore delegate = new InMemoryStore();
+        final CountDownLatch writeStarted = new CountDownLatch(1);
+        final CountDownLatch releaseWrite = new CountDownLatch(1);
+        SubscriptionManagerPreferences.Store blockingStore = new SubscriptionManagerPreferences.Store() {
+            @Override
+            public String getString(String key) {
+                return delegate.getString(key);
+            }
+
+            @Override
+            public void putString(String key, String value) {
+                writeStarted.countDown();
+                try {
+                    if (!releaseWrite.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("Timed out waiting to release swipe write");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(exception);
+                }
+                delegate.putString(key, value);
+            }
+
+            @Override
+            public void remove(String key) {
+                delegate.remove(key);
+            }
+        };
+        final SubscriptionManagerAccount first =
+                SubscriptionManagerAccount.fromIdentifier("first");
+        final SubscriptionManagerAccount second =
+                SubscriptionManagerAccount.fromIdentifier("second");
+        final SubscriptionManagerState state = new SubscriptionManagerState(blockingStore, first);
+        final AtomicBoolean persisted = new AtomicBoolean(false);
+        Thread swipe = new Thread(() -> persisted.set(state.manuallyHideVideoPersistently(
+                "Abc_def-123", first.getNamespace())));
+        Thread accountSwitch = new Thread(() -> state.setAccount(second));
+
+        swipe.start();
+        assertTrue(writeStarted.await(5, TimeUnit.SECONDS));
+        accountSwitch.start();
+        releaseWrite.countDown();
+        swipe.join(5000);
+        accountSwitch.join(5000);
+
+        assertFalse(swipe.isAlive());
+        assertFalse(accountSwitch.isAlive());
+        assertTrue(persisted.get());
+        assertTrue(delegate.values.containsKey(first.stateKey()));
+        assertFalse(delegate.values.containsKey(second.stateKey()));
+        assertEquals(second, state.getAccount());
+        assertFalse(state.shouldHideVideo("Abc_def-123"));
+    }
+
+    @Test
+    public void fullManualHideCollectionRejectsAbsentSwipeButAcceptsExistingKey() {
+        InMemoryStore store = new InMemoryStore();
+        SubscriptionManagerAccount account = SubscriptionManagerAccount.fromIdentifier("full");
+        List<String> keys = new ArrayList<>();
+        for (int index = 0; index < SubscriptionManagerState.MAX_IDS_PER_COLLECTION; index++) {
+            keys.add(SubscriptionManagerHash.identityKey(
+                    account.getNamespace(), "video", "video-" + index));
+        }
+        SubscriptionManagerState.Snapshot full = SubscriptionManagerState.Snapshot.create(
+                keys, null, null, null, null);
+        store.putString(account.stateKey(), SubscriptionManagerStateCodec.serialize(full));
+        SubscriptionManagerState state = new SubscriptionManagerState(store, account);
+
+        assertTrue(state.manuallyHideVideoPersistently("video-0", account.getNamespace()));
+        assertFalse(state.manuallyHideVideoPersistently("absent-video", account.getNamespace()));
+        assertFalse(state.shouldHideVideo("absent-video"));
     }
 
     @Test
