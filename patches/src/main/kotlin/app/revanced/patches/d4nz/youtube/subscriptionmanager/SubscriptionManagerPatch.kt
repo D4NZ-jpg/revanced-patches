@@ -1,7 +1,9 @@
 package app.revanced.patches.d4nz.youtube.subscriptionmanager
 
 import app.revanced.com.android.tools.smali.dexlib2.mutable.MutableMethod
+import app.revanced.patcher.extensions.ExternalLabel
 import app.revanced.patcher.extensions.addInstruction
+import app.revanced.patcher.extensions.addInstructionsWithLabels
 import app.revanced.patcher.extensions.instructions
 import app.revanced.patcher.firstClassDef
 import app.revanced.patcher.patch.BytecodePatchContext
@@ -40,6 +42,69 @@ private data class LithoCardBindHookMatch(
     val componentRegister: Int,
     val rootRegister: Int,
 )
+
+private data class RuntimeMethodContract(
+    val classDescriptor: String,
+    val methodName: String,
+    val parameterTypes: List<String>,
+    val returnType: String,
+    val accessFlags: Int,
+)
+
+private fun BytecodePatchContext.requireRuntimeMethod(
+    contract: RuntimeMethodContract,
+): MutableMethod {
+    val matches = firstClassDef(contract.classDescriptor).methods.filter { method ->
+        method.name == contract.methodName &&
+            method.parameterTypes.map { it.toString() } == contract.parameterTypes &&
+            method.returnType == contract.returnType
+    }
+    if (matches.size != 1 || matches.single().accessFlags != contract.accessFlags) {
+        throw PatchException(
+            "Native Hide ABI method drifted: ${contract.classDescriptor}->" +
+                "${contract.methodName} (found ${matches.size})",
+        )
+    }
+    return matches.single()
+}
+
+private fun BytecodePatchContext.requireRuntimeField(
+    classDescriptor: String,
+    fieldName: String,
+    fieldType: String,
+    accessFlags: Int,
+) {
+    val matches = firstClassDef(classDescriptor).fields.filter { field ->
+        field.name == fieldName && field.type == fieldType
+    }
+    if (matches.size != 1 || matches.single().accessFlags != accessFlags) {
+        throw PatchException(
+            "Native Hide ABI field drifted: $classDescriptor->$fieldName (found ${matches.size})",
+        )
+    }
+}
+
+private fun BytecodePatchContext.requireRuntimeExtension(
+    classDescriptor: String,
+    fieldName: String,
+    extensionNumber: Int,
+) {
+    val publicStaticFinal = AccessFlags.PUBLIC.value or AccessFlags.STATIC.value or
+        AccessFlags.FINAL.value
+    requireRuntimeField(classDescriptor, fieldName, "Latek;", publicStaticFinal)
+    val initializers = firstClassDef(classDescriptor).methods.filter { method ->
+        method.name == "<clinit>" && method.parameterTypes.isEmpty() && method.returnType == "V"
+    }
+    val numberMatches = initializers.singleOrNull()?.instructions?.count { instruction ->
+        instruction.opcode == Opcode.CONST &&
+            (instruction as? NarrowLiteralInstruction)?.narrowLiteral == extensionNumber
+    } ?: 0
+    if (initializers.size != 1 || numberMatches != 1) {
+        throw PatchException(
+            "Native Hide extension drifted: $classDescriptor->$fieldName/$extensionNumber",
+        )
+    }
+}
 
 private fun Int.isOrdinaryInvokeRegister() = this in 0..15
 
@@ -86,7 +151,7 @@ private fun addSubscriptionManagerResources() {
         "revanced_d4nz_subscription_manager_about_summary" to
             """Automatically hides supported regular videos from your Subscriptions feed after you watch the selected percentage. Refresh the feed after watching a video.
 
-Experimental left swipe can hide supported Subscription entries locally. Channel hiding is not available.""",
+Experimental left swipe persistently hides supported Subscription entries and uses the native Hide action when its exact verified route is available. Channel hiding is not available.""",
         "revanced_d4nz_subscription_manager_title" to "Enable subscription manager",
         "revanced_d4nz_subscription_manager_summary_on" to
             "Enabled for the Subscriptions feed",
@@ -94,7 +159,7 @@ Experimental left swipe can hide supported Subscription entries locally. Channel
         "revanced_d4nz_subscription_manager_swipe_to_hide_title" to
             "Experimental: Swipe to hide",
         "revanced_d4nz_subscription_manager_swipe_to_hide_summary_on" to
-            "Deliberate left swipe hides supported Subscription entries locally",
+            "Deliberate left swipe persistently hides supported Subscription entries",
         "revanced_d4nz_subscription_manager_swipe_to_hide_summary_off" to
             "Left swipe hiding is off",
         "revanced_d4nz_subscription_manager_hide_watched_title" to "Hide watched videos",
@@ -326,7 +391,161 @@ val subscriptionManagerPatch = bytecodePatch(
             )
         }
 
-        val adapterNotifyItemChangedMethods = firstClassDef("Ldefpackage/mx;").methods.filter { method ->
+        val public = AccessFlags.PUBLIC.value
+        val privateFinal = AccessFlags.PRIVATE.value or AccessFlags.FINAL.value
+        val publicFinal = public or AccessFlags.FINAL.value
+        val publicStatic = public or AccessFlags.STATIC.value
+        val publicAbstract = public or AccessFlags.ABSTRACT.value
+        val publicConstructor = public or AccessFlags.CONSTRUCTOR.value
+        val finalSynthetic = AccessFlags.FINAL.value or AccessFlags.SYNTHETIC.value
+
+        requireRuntimeExtension("Laxtl;", "a", 169495254)
+        requireRuntimeExtension("Lbafw;", "b", 98150882)
+        requireRuntimeExtension("Lawvp;", "a", 65153809)
+        requireRuntimeField("Ljhv;", "c", "Laewu;", privateFinal)
+        requireRuntimeField("Lanqc;", "b", "Laewu;", privateFinal)
+        requireRuntimeField("Lanqb;", "b", "Lbagi;", publicFinal)
+        requireRuntimeField("Lanqb;", "c", "Larbo;", publicFinal)
+        requireRuntimeField("Lanqb;", "f", "Lavfw;", publicFinal)
+        requireRuntimeField("Lgqg;", "a", "Ljava/lang/Object;", publicFinal)
+        requireRuntimeField("Lgdh;", "a", "Lgev;", publicFinal)
+        requireRuntimeField("Lgev;", "w", "Lgcq;", public)
+        requireRuntimeField("Lgcq;", "b", "Lgcy;", public)
+        requireRuntimeField("Lgcq;", "c", "I", publicFinal)
+        requireRuntimeField("Lsky;", "E", "Ljava/util/List;", 0)
+        requireRuntimeField("Lsov;", "f", "Lrks;", finalSynthetic)
+        requireRuntimeField("Lbagi;", "c", "Latfd;", public)
+        val arboClass = firstClassDef("Larbo;")
+        if (arboClass.superclass != "Ljava/lang/Object;" ||
+            arboClass.interfaces.none { it.toString() == "Ljava/util/Map;" }
+        ) {
+            throw PatchException("Native Hide endpoint-map ABI drifted")
+        }
+        requireRuntimeField("Lbagf;", "b", "I", public)
+        requireRuntimeField("Lbagf;", "d", "Lbagk;", public)
+        requireRuntimeField("Lbagk;", "b", "I", public)
+        requireRuntimeField("Lbagk;", "e", "Lavfw;", public)
+
+        requireRuntimeMethod(
+            RuntimeMethodContract(
+                "Lcom/facebook/litho/ComponentHost;", "a", emptyList(), "I", publicFinal,
+            ),
+        )
+        requireRuntimeMethod(
+            RuntimeMethodContract(
+                "Lcom/facebook/litho/ComponentHost;", "b", listOf("I"), "Lgqg;", publicFinal,
+            ),
+        )
+        requireRuntimeMethod(
+            RuntimeMethodContract("Lgdh;", "a", listOf("Lgqg;"), "Lgdh;", publicStatic),
+        )
+        requireRuntimeMethod(
+            RuntimeMethodContract(
+                "Lsov;", "a",
+                listOf("Landroid/view/View;", "Ltuy;", "Landroid/view/MotionEvent;"),
+                "V", publicFinal,
+            ),
+        )
+        requireRuntimeMethod(
+            RuntimeMethodContract(
+                "Lrks;", "j", emptyList(),
+                "Lcom/google/protos/youtube/elements/CommandOuterClass\$Command;", publicFinal,
+            ),
+        )
+        requireRuntimeMethod(
+            RuntimeMethodContract(
+                "Lateh;", "b", listOf("Latdw;"), "Ljava/lang/Object;", publicFinal,
+            ),
+        )
+        requireRuntimeMethod(
+            RuntimeMethodContract("Lasmq;", "J", listOf("Lateh;"), "I", publicStatic),
+        )
+        requireRuntimeMethod(
+            RuntimeMethodContract(
+                "Laeww;", "c", listOf("Lavfw;"), "Ljava/lang/Object;", publicStatic,
+            ),
+        )
+        requireRuntimeMethod(
+            RuntimeMethodContract("Laiml;", "fq", listOf("Lbagf;"), "Lavfw;", publicStatic),
+        )
+        requireRuntimeMethod(
+            RuntimeMethodContract(
+                "Laewu;", "c", listOf("Lavfw;", "Ljava/util/Map;"), "V", publicAbstract,
+            ),
+        )
+        requireRuntimeMethod(
+            RuntimeMethodContract("Ltuy;", "<init>", listOf("F", "F"), "V", publicConstructor),
+        )
+        val menuHandlerMethod = requireRuntimeMethod(
+            RuntimeMethodContract(
+                "Ljhv;", "b", listOf("Lavfw;", "Ljava/util/Map;"), "V", publicFinal,
+            ),
+        )
+        val menuHandlerHook =
+            "Lapp/revanced/extension/d4nz/youtube/subscriptionmanager/" +
+                "SubscriptionManagerNativeHide;->onMenuCommandResolved(" +
+                "Ljava/lang/Object;Ljava/lang/Object;Ljava/util/Map;)V"
+        menuHandlerMethod.addInstruction(
+            0,
+            "invoke-static/range {p0 .. p2}, $menuHandlerHook",
+        )
+        if (menuHandlerMethod.instructions.count { instruction ->
+                val reference =
+                    (instruction as? ReferenceInstruction)?.reference as? MethodReference
+                reference?.toString() == menuHandlerHook
+            } != 1
+        ) {
+            throw PatchException("Could not verify the injected native Hide command hook")
+        }
+
+        val menuCoordinatorMethod = requireRuntimeMethod(
+            RuntimeMethodContract("Lanqc;", "a", listOf("Lanqb;"), "V", publicFinal),
+        )
+        val menuScratchMatches = menuCoordinatorMethod.instructions.indices.filter { index ->
+            if (index + 1 >= menuCoordinatorMethod.instructions.size) return@filter false
+            val call = menuCoordinatorMethod.instructions[index]
+            val reference = (call as? ReferenceInstruction)?.reference as? MethodReference
+            val result = menuCoordinatorMethod.instructions[index + 1]
+            call.opcode == Opcode.INVOKE_INTERFACE &&
+                reference?.toString() == "Lanuw;->c()Z" &&
+                result.opcode == Opcode.MOVE_RESULT &&
+                result is OneRegisterInstruction
+        }
+        if (menuScratchMatches.size != 1) {
+            throw PatchException(
+                "Could not prove the native Hide menu scratch register " +
+                    "(found ${menuScratchMatches.size})",
+            )
+        }
+        val menuScratchRegister =
+            (menuCoordinatorMethod.instructions[menuScratchMatches.single() + 1]
+                as OneRegisterInstruction).registerA
+        val nativeHideHook =
+            "Lapp/revanced/extension/d4nz/youtube/subscriptionmanager/" +
+                "SubscriptionManagerNativeHide;->onMenuResolved(" +
+                "Ljava/lang/Object;Ljava/lang/Object;)Z"
+        menuCoordinatorMethod.addInstructionsWithLabels(
+            0,
+            """
+                invoke-static/range {p0 .. p1}, $nativeHideHook
+                move-result v$menuScratchRegister
+                if-eqz v$menuScratchRegister, :continue_native_menu
+                return-void
+            """,
+            ExternalLabel("continue_native_menu", menuCoordinatorMethod.instructions.first()),
+        )
+        val nativeHideHooks = menuCoordinatorMethod.instructions.count { instruction ->
+            val reference = (instruction as? ReferenceInstruction)?.reference as? MethodReference
+            reference?.toString() == nativeHideHook
+        }
+        if (nativeHideHooks != 1) {
+            throw PatchException(
+                "Could not verify the injected native Hide menu hook " +
+                    "(found $nativeHideHooks calls)",
+            )
+        }
+
+        val adapterNotifyItemChangedMethods = firstClassDef("Lmx;").methods.filter { method ->
             method.name == "hf" &&
                 method.parameterTypes.map { it.toString() } == listOf("I") &&
                 method.returnType == "V" &&

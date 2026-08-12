@@ -82,9 +82,21 @@ public final class SubscriptionManagerSwipeHandlerTest {
         assertEquals(Result.PASS,
                 classifier.onEvent(MotionEvent.ACTION_MOVE, 1, 82, 102, 48));
         assertEquals(Result.CONSUME,
-                classifier.onEvent(MotionEvent.ACTION_MOVE, 1, 70, 103, 48));
+                classifier.onEvent(MotionEvent.ACTION_MOVE, 1, 78, 103, 48));
         assertEquals(Result.COMPLETE,
-                classifier.onEvent(MotionEvent.ACTION_UP, 1, 45, 104, 48));
+                classifier.onEvent(MotionEvent.ACTION_UP, 1, 52, 104, 48));
+    }
+
+    @Test
+    public void middleGroundAcceptsControlledDiagonalButNotScrollBiasedMovement() {
+        SubscriptionManagerSwipeHandler.GestureClassifier controlledDiagonal = classifier();
+        controlledDiagonal.onDown(100, 100);
+        assertEquals(Result.CONSUME,
+                controlledDiagonal.onEvent(MotionEvent.ACTION_MOVE, 1, 76, 87, 48));
+        assertEquals(Result.COMPLETE,
+                controlledDiagonal.onEvent(MotionEvent.ACTION_UP, 1, 50, 72, 48));
+
+        assertCancelled(MotionEvent.ACTION_MOVE, 1, 76, 86);
     }
 
     @Test
@@ -92,7 +104,7 @@ public final class SubscriptionManagerSwipeHandlerTest {
         assertPassesWithoutCompletion(MotionEvent.ACTION_UP, 1, 80, 100);
         assertCancelled(MotionEvent.ACTION_MOVE, 1, 110, 100);
         assertCancelled(MotionEvent.ACTION_MOVE, 1, 95, 112);
-        assertCancelled(MotionEvent.ACTION_MOVE, 1, 70, 118);
+        assertCancelled(MotionEvent.ACTION_MOVE, 1, 70, 82);
         assertCancelled(MotionEvent.ACTION_POINTER_DOWN, 2, 90, 100);
         assertCancelled(MotionEvent.ACTION_CANCEL, 1, 90, 100);
     }
@@ -102,23 +114,23 @@ public final class SubscriptionManagerSwipeHandlerTest {
         SubscriptionManagerSwipeHandler.GestureClassifier shortSwipe = classifier();
         shortSwipe.onDown(100, 100);
         assertEquals(Result.CONSUME,
-                shortSwipe.onEvent(MotionEvent.ACTION_MOVE, 1, 70, 102, 48));
+                shortSwipe.onEvent(MotionEvent.ACTION_MOVE, 1, 78, 102, 48));
         assertEquals(Result.CANCELLED,
                 shortSwipe.onEvent(MotionEvent.ACTION_UP, 1, 60, 102, 48));
 
         SubscriptionManagerSwipeHandler.GestureClassifier reversal = classifier();
         reversal.onDown(100, 100);
         assertEquals(Result.CONSUME,
-                reversal.onEvent(MotionEvent.ACTION_MOVE, 1, 70, 102, 48));
+                reversal.onEvent(MotionEvent.ACTION_MOVE, 1, 78, 102, 48));
         assertEquals(Result.CANCELLED,
                 reversal.onEvent(MotionEvent.ACTION_MOVE, 1, 95, 102, 48));
 
         SubscriptionManagerSwipeHandler.GestureClassifier verticalDrift = classifier();
         verticalDrift.onDown(100, 100);
         assertEquals(Result.CONSUME,
-                verticalDrift.onEvent(MotionEvent.ACTION_MOVE, 1, 70, 102, 48));
+                verticalDrift.onEvent(MotionEvent.ACTION_MOVE, 1, 78, 102, 48));
         assertEquals(Result.CANCELLED,
-                verticalDrift.onEvent(MotionEvent.ACTION_MOVE, 1, 55, 125, 48));
+                verticalDrift.onEvent(MotionEvent.ACTION_MOVE, 1, 55, 127, 48));
     }
 
     @Test
@@ -197,7 +209,7 @@ public final class SubscriptionManagerSwipeHandlerTest {
     }
 
     private static SubscriptionManagerSwipeHandler.GestureClassifier classifier() {
-        return new SubscriptionManagerSwipeHandler.GestureClassifier(8, 24, 2f);
+        return new SubscriptionManagerSwipeHandler.GestureClassifier(8, 20, 1.75f);
     }
 
     private static void assertPassesWithoutCompletion(int action, int pointers, float x, float y) {

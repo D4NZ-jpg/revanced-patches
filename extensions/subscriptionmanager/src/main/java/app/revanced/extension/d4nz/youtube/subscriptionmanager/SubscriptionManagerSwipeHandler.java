@@ -24,10 +24,10 @@ import app.revanced.extension.youtube.shared.NavigationBar.NavigationButton;
 public final class SubscriptionManagerSwipeHandler {
     static final int MAX_PAYLOAD_BYTES = 64 * 1024;
     private static final int MAX_PARENT_DEPTH = 16;
-    private static final float MIN_SWIPE_ACTIVATION_DP = 24f;
-    private static final float MIN_SWIPE_COMMIT_DP = 96f;
-    private static final float SWIPE_COMMIT_WIDTH_FRACTION = 0.35f;
-    private static final float HORIZONTAL_DOMINANCE = 2f;
+    private static final float MIN_SWIPE_ACTIVATION_DP = 20f;
+    private static final float MIN_SWIPE_COMMIT_DP = 80f;
+    private static final float SWIPE_COMMIT_WIDTH_FRACTION = 0.30f;
+    private static final float HORIZONTAL_DOMINANCE = 1.75f;
     private static final long SWIPE_SETTLE_DURATION_MS = 160L;
     private static final long SWIPE_RETURN_DURATION_MS = 120L;
 
@@ -486,7 +486,7 @@ public final class SubscriptionManagerSwipeHandler {
         }
     }
 
-    private static boolean completeSwipe(final Binding binding) {
+    private static boolean completeSwipe(final Binding binding, MotionEvent event) {
         final View item = binding == null ? null : binding.item();
         final RecyclerView recyclerView = binding == null ? null : binding.recyclerView();
         final RemovalPlan plan = attestSourceRemoval(recyclerView, item);
@@ -515,6 +515,9 @@ public final class SubscriptionManagerSwipeHandler {
             }
             attempt.persistenceReady = true;
         }
+        // Native Hide is best-effort. The existing persistent local removal remains authoritative
+        // and runs after the animation if YouTube rejects, delays, or changes the native route.
+        SubscriptionManagerNativeHide.tryHide(item, event);
         try {
             item.animate().cancel();
             item.animate()
@@ -808,7 +811,7 @@ public final class SubscriptionManagerSwipeHandler {
                 if (result == GestureClassifier.Result.CONSUME) {
                     updateDrag(active, event.getX() - downX);
                 } else if (result == GestureClassifier.Result.COMPLETE) {
-                    if (!completeSwipe(active)) animateBack(active);
+                    if (!completeSwipe(active, event)) animateBack(active);
                 } else if (result == GestureClassifier.Result.CANCELLED) {
                     animateBack(active);
                 }
