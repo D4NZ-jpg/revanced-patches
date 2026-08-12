@@ -80,11 +80,20 @@ public final class SubscriptionManagerSwipeHandlerTest {
         SubscriptionManagerSwipeHandler.GestureClassifier classifier = classifier();
         classifier.onDown(100, 100);
         assertEquals(Result.PASS,
-                classifier.onEvent(MotionEvent.ACTION_MOVE, 1, 82, 102, 48));
+                classifier.onEvent(MotionEvent.ACTION_MOVE, 1, 82, 102, 40));
         assertEquals(Result.CONSUME,
-                classifier.onEvent(MotionEvent.ACTION_MOVE, 1, 78, 103, 48));
+                classifier.onEvent(MotionEvent.ACTION_MOVE, 1, 78, 103, 40));
         assertEquals(Result.COMPLETE,
-                classifier.onEvent(MotionEvent.ACTION_UP, 1, 52, 104, 48));
+                classifier.onEvent(MotionEvent.ACTION_UP, 1, 60, 104, 40));
+    }
+
+    @Test
+    public void commitTravelUsesReducedErgonomicDistance() {
+        assertEquals(64f, SubscriptionManagerSwipeHandler.swipeCommitDistance(64f, 240), 0f);
+        assertEquals(79.2f,
+                SubscriptionManagerSwipeHandler.swipeCommitDistance(64f, 360), 0.001f);
+        assertEquals(237.6f,
+                SubscriptionManagerSwipeHandler.swipeCommitDistance(64f, 1080), 0.001f);
     }
 
     @Test
@@ -94,7 +103,7 @@ public final class SubscriptionManagerSwipeHandlerTest {
         assertEquals(Result.CONSUME,
                 controlledDiagonal.onEvent(MotionEvent.ACTION_MOVE, 1, 76, 87, 48));
         assertEquals(Result.COMPLETE,
-                controlledDiagonal.onEvent(MotionEvent.ACTION_UP, 1, 50, 72, 48));
+                controlledDiagonal.onEvent(MotionEvent.ACTION_UP, 1, 60, 78, 40));
 
         assertCancelled(MotionEvent.ACTION_MOVE, 1, 76, 86);
     }

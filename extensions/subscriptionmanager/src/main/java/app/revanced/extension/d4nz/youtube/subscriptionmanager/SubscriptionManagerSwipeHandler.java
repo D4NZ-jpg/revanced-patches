@@ -25,8 +25,8 @@ public final class SubscriptionManagerSwipeHandler {
     static final int MAX_PAYLOAD_BYTES = 64 * 1024;
     private static final int MAX_PARENT_DEPTH = 16;
     private static final float MIN_SWIPE_ACTIVATION_DP = 20f;
-    private static final float MIN_SWIPE_COMMIT_DP = 80f;
-    private static final float SWIPE_COMMIT_WIDTH_FRACTION = 0.30f;
+    private static final float MIN_SWIPE_COMMIT_DP = 64f;
+    private static final float SWIPE_COMMIT_WIDTH_FRACTION = 0.22f;
     private static final float HORIZONTAL_DOMINANCE = 1.75f;
     private static final long SWIPE_SETTLE_DURATION_MS = 160L;
     private static final long SWIPE_RETURN_DURATION_MS = 120L;
@@ -825,9 +825,8 @@ public final class SubscriptionManagerSwipeHandler {
 
         private float commitDistance() {
             View item = active == null ? null : active.item();
-            return Math.max(minimumCommitDistance,
-                    Math.max(item == null ? 0 : item.getWidth(), 1)
-                            * SWIPE_COMMIT_WIDTH_FRACTION);
+            return swipeCommitDistance(
+                    minimumCommitDistance, item == null ? 0 : item.getWidth());
         }
 
         boolean references(View item) {
@@ -838,6 +837,11 @@ public final class SubscriptionManagerSwipeHandler {
             active = null;
             classifier.reset();
         }
+    }
+
+    static float swipeCommitDistance(float minimumCommitDistance, int itemWidth) {
+        return Math.max(minimumCommitDistance,
+                Math.max(itemWidth, 1) * SWIPE_COMMIT_WIDTH_FRACTION);
     }
 
     static final class GestureClassifier {
